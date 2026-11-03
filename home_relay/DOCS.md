@@ -53,7 +53,7 @@ ouvre la session ; elle ne modifie rien.
 | Clients vus sur 24 h | `v2/api/site/<site>/clients/history?withinHours=24`, sinon `stat/alluser` filtré sur 24 h | nom, réseau, dernière borne, dernière apparition |
 | Noms des réseaux | `rest/networkconf` | nom du réseau (pour les clients qui n'ont que l'identifiant du réseau) |
 | Santé WAN, speedtest | `stat/health` (sinon `speedtest-status` de la passerelle) | état, fournisseur, latence, uptime, coupures ; date, débits et ping du dernier speedtest |
-| Menaces IPS | `stat/ips/event`, sinon les alarmes IPS de `stat/alarm` | titre (signature), gravité, catégorie, action (bloquée/détectée), date |
+| Menaces IPS | essayées dans l'ordre, en GET : `v2/api/site/<site>/system-log/threat`, `stat/ips/event`, `stat/alarm`, `stat/event` (alertes IPS seulement) ; la première qui répond est retenue | titre (signature, adresses masquées), gravité, catégorie, action (bloquée/détectée), date |
 
 Home Assistant (API du Supervisor, `homeassistant_api: true`, sans jeton
 longue durée) : `GET /api/config` (version) et `GET /api/states` :
@@ -71,10 +71,16 @@ longue durée) : `GET /api/config` (version) et `GET /api/states` :
   séparément et son résultat (`ok` ou le message d'erreur) est envoyé avec les
   données. Le journal du module et la section « Relais maison » de l'écran
   Réseau montrent ce qui a réellement été obtenu.
-- **Menaces IPS** : sur les versions récentes de UniFi Network, l'interface lit
-  le journal des menaces par une requête POST (`system-log`), que ce module
-  n'utilise pas. Si `stat/ips/event` et `stat/alarm` ne renvoient rien, la liste
-  des menaces reste vide.
+- **Menaces IPS** : sur UniFi Network 10, `stat/alarm` n'existe plus (HTTP 404)
+  et l'interface lit le journal des menaces par une requête **POST**
+  (`system-log`), que ce module s'interdit. Si aucune des requêtes GET ne
+  répond, la source passe à « **désactivée** » (pas une erreur), avec la liste
+  des essais ; un nouvel essai a lieu 24 h plus tard (ou au redémarrage du
+  module). Les « traffic-flows » ne sont **pas** utilisés : ce sont les
+  connexions, donc les sites visités.
+- **Jeton Home Assistant** : fourni par le Supervisor (`homeassistant_api:
+  true`). Sur les images de base récentes (s6-overlay v3), il est lu dans
+  `/run/s6/container_environment/` quand il n'est pas dans l'environnement.
 - **Sens des compteurs** : les compteurs `tx_bytes` / `rx_bytes` sont
   transmis tels que UniFi les donne ; l'app affiche leur **somme** (volume).
 - Les compteurs d'un client sans fil repartent de zéro à chaque reconnexion ;

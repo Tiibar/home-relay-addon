@@ -1,6 +1,10 @@
 """Lecture de Home Assistant par l'API du Supervisor (homeassistant_api: true).
 
 Aucun jeton longue durée : le Supervisor fournit SUPERVISOR_TOKEN à l'add-on.
+Sur les images de base récentes (s6-overlay v3), /init ne transmet pas
+l'environnement du conteneur au programme principal : le jeton est alors lu
+dans /run/s6/container_environment/SUPERVISOR_TOKEN (mécanisme officiel,
+celui qu'utilise « with-contenv » / bashio).
 Uniquement des lectures (GET /api/config, GET /api/states). Rien n'est
 commandé : pas d'appel de service, pas d'écriture.
 """
@@ -13,6 +17,7 @@ import urllib.request
 from privacy import clean_text
 
 API = "http://supervisor/core/api"
+S6_ENV_DIR = "/run/s6/container_environment"
 TIMEOUT = 20
 
 
@@ -20,10 +25,28 @@ class HaError(Exception):
     pass
 
 
+def supervisor_token(env=None, s6_dir: str = S6_ENV_DIR):
+    """Jeton du Supervisor : environnement, sinon fichiers d'environnement s6
+    (SUPERVISOR_TOKEN, ou l'ancien nom HASSIO_TOKEN)."""
+    env = os.environ if env is None else env
+    for name in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
+        if env.get(name):
+            return env[name].strip()
+    for name in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
+        try:
+            with open(os.path.join(s6_dir, name), encoding="utf-8") as f:
+                token = f.read().strip()
+            if token:
+                return token
+        except OSError:
+            continue
+    return None
+
+
 def _get(path: str):
-    token = os.environ.get("SUPERVISOR_TOKEN")
+    token = supervisor_token()
     if not token:
-        raise HaError("SUPERVISOR_TOKEN absent (homeassistant_api doit être activé)")
+        raise HaError("jeton du Supervisor introuvable (homeassistant_api: true ; environnement et /run/s6/container_environment vides)")
     req = urllib.request.Request(f"{API}{path}", method="GET", headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:

@@ -19,7 +19,7 @@ import homeassistant
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -52,6 +52,9 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
         try:
             raw[name] = fn()
             sources[name] = "ok"
+        except unifi.ThreatsUnavailable as e:  # désactivée proprement, pas une panne
+            raw[name] = None
+            sources[name] = f"désactivée : {short(e)}"
         except Exception as e:  # une source en panne n'empêche pas les autres
             raw[name] = None
             sources[name] = f"erreur : {short(e)}"
@@ -62,6 +65,9 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
     read("unifi_networks", client.networks)
     read("unifi_health", client.health)
     read("unifi_threats", client.threats)
+    if raw.get("unifi_threats") is not None:
+        raw["unifi_threats"], endpoint = raw["unifi_threats"]
+        sources["unifi_threats"] = f"ok ({endpoint})"
     read("home_assistant", homeassistant.read)
 
     devices = raw.get("unifi_devices") or []
@@ -106,13 +112,16 @@ def main():
         started = time.monotonic()
         try:
             payload = collect(opts, client)
-            failed = {k: v for k, v in payload["sources"].items() if v != "ok"}
+            failed = {k: v for k, v in payload["sources"].items() if not v.startswith("ok")}
             n_clients = len((payload.get("unifi") or {}).get("clients") or [])
             log.info("Lu : %d clients, %d équipements UniFi%s.", n_clients,
                      len((payload.get("unifi") or {}).get("devices") or []),
                      ", Home Assistant" if payload.get("ha") else "")
             for k, v in failed.items():
-                log.warning("Source %s : %s", k, v)
+                if v.startswith("désactivée"):
+                    log.info("Source %s %s", k, v)
+                else:
+                    log.warning("Source %s : %s", k, v)
             dropped = queue.push(payload)
             if dropped:
                 log.warning("File d'attente pleine : %d ancien(s) envoi(s) abandonné(s).", dropped)

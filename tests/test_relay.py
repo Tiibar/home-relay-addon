@@ -206,3 +206,79 @@ class Options(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SupervisorToken(unittest.TestCase):
+    def test_env_then_s6_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(homeassistant.supervisor_token({"SUPERVISOR_TOKEN": "abc"}, d), "abc")
+            self.assertIsNone(homeassistant.supervisor_token({}, d))
+            with open(os.path.join(d, "SUPERVISOR_TOKEN"), "w") as f:
+                f.write("from-s6\n")
+            self.assertEqual(homeassistant.supervisor_token({}, d), "from-s6")
+            self.assertEqual(homeassistant.supervisor_token({"HASSIO_TOKEN": "old"}, d), "old")
+
+
+class FakeClient(unifi.UnifiClient):
+    def __init__(self, answers):
+        super().__init__("https://gw.invalid", "u", "p")
+        self.answers, self.calls = answers, []
+
+    def get(self, path, params=None):
+        self.calls.append(path)
+        for key, value in self.answers.items():
+            if path.endswith(key):
+                if isinstance(value, Exception):
+                    raise value
+                return value
+        raise unifi.UnifiError("HTTP 404 sur " + path)
+
+
+class Threats(unittest.TestCase):
+    def test_first_get_endpoint_that_answers_is_kept(self):
+        c = FakeClient({"system-log/threat": unifi.UnifiError("HTTP 405 sur x"),
+                        "stat/ips/event": [{"_id": "1", "inner_alert_signature": "ET SCAN", "timestamp": 1762171000000}]})
+        rows, name = c.threats()
+        self.assertEqual((len(rows), name), (1, "stat/ips/event"))
+        c.calls.clear()
+        c.threats()
+        self.assertTrue(c.calls[0].endswith("stat/ips/event"))   # retenu, essayé en premier
+
+    def test_v2_shape_and_redaction(self):
+        c = FakeClient({"system-log/threat": {"data": [{"id": "x", "timestamp": 1762171000000, "severity": "HIGH",
+                        "category": "SECURITY", "subcategory": "Scan",
+                        "message": "Threat blocked from " + "203.0.113.9" + " to " + "198.51.100.50"}]}})
+        rows, name = c.threats()
+        self.assertEqual(name, "v2 system-log/threat")
+        t = unifi.map_threats(rows, SECRET)[0]
+        self.assertEqual(t["title"], "Threat blocked from [adresse] to [adresse]")
+        self.assertEqual((t["severity"], t["category"]), ("HIGH", "Scan"))
+
+    def test_general_logs_keep_only_ips(self):
+        c = FakeClient({"stat/event": [{"key": "EVT_WU_Connected", "msg": "x"},
+                                       {"key": "EVT_IPS_IpsAlert", "msg": "alerte", "time": 1762171000000}]})
+        rows, name = c.threats()
+        self.assertEqual((name, len(rows)), ("stat/event", 1))
+
+    def test_disabled_cleanly_when_nothing_answers(self):
+        c = FakeClient({})
+        with self.assertRaises(unifi.ThreatsUnavailable) as e:
+            c.threats()
+        self.assertIn("HTTP 404", str(e.exception))
+        n = len(c.calls)
+        with self.assertRaises(unifi.ThreatsUnavailable):
+            c.threats()
+        self.assertEqual(len(c.calls), n)                         # pas de nouvel essai avant 24 h
+
+    def test_collect_reports_disabled_source(self):
+        c = FakeClient({"stat/device": DEVICES, "stat/sta": CLIENTS_NOW, "rest/networkconf": NETWORKS,
+                        "stat/health": [], "clients/history": []})
+        orig = homeassistant.read
+        homeassistant.read = lambda: ({"version": "2026.11.0"}, [])
+        try:
+            p = main.collect({"shared_secret": SECRET}, c)
+        finally:
+            homeassistant.read = orig
+        self.assertTrue(p["sources"]["unifi_threats"].startswith("désactivée"))
+        self.assertEqual(p["sources"]["home_assistant"], "ok")
+        self.assertEqual(p["unifi"]["threats"], [])

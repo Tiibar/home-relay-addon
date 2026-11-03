@@ -39,3 +39,11 @@ def clean_text(value, max_len: int = 120):
     if not s or _IPV4.search(s) or _MAC.search(s):
         return None
     return s
+
+
+def redact(value, max_len: int = 120):
+    """Texte court où toute adresse IP ou MAC est remplacée par « [adresse] »."""
+    if value is None:
+        return None
+    s = _MAC.sub("[adresse]", _IPV4.sub("[adresse]", str(value))).strip()[:max_len]
+    return s or None

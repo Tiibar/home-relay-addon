@@ -44,6 +44,13 @@ jobs:
         run: |
           docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 home-relay:${{ matrix.arch }} -c \
             "import sys, platform; sys.path.insert(0, '/app'); import main, unifi, homeassistant, sender, privacy; print('OK', main.VERSION, sys.version.split()[0], platform.machine())"
+      - name: Jeton du Supervisor visible malgré /init (s6-overlay)
+        run: |
+          # Point d'entrée par défaut de l'image (/init de s6-overlay), comme sous le Supervisor
+          out=$(docker run --rm --platform ${{ matrix.platform }} -e SUPERVISOR_TOKEN=jeton-de-test home-relay:${{ matrix.arch }} \
+            python3 -c "import sys, os; sys.path.insert(0, '/app'); import homeassistant; print('env:', bool(os.environ.get('SUPERVISOR_TOKEN')), 'lu:', homeassistant.supervisor_token())")
+          echo "$out"
+          echo "$out" | grep -q "lu: jeton-de-test"
       - name: Version identique (config.yaml / code)
         run: |
           v=$(docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 home-relay:${{ matrix.arch }} -c "import sys; sys.path.insert(0,'/app'); import main; print(main.VERSION)")

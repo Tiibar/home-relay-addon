@@ -18,13 +18,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from privacy import clean_text, hashed_id
+from privacy import clean_text, hashed_id, redact
 
 TIMEOUT = 20
 
 
 class UnifiError(Exception):
     pass
+
+
+class ThreatsUnavailable(Exception):
+    """Source désactivée proprement (pas une panne)."""
 
 
 class UnifiClient:
@@ -43,6 +47,9 @@ class UnifiClient:
             urllib.request.HTTPCookieProcessor(self.jar),
         )
         self.logged_in = False
+        self.threats_endpoint = None
+        self.threats_disabled_until = 0.0
+        self.threats_reason = ""
 
     # -- session -------------------------------------------------------------
     def login(self):
@@ -113,21 +120,74 @@ class UnifiClient:
         since = time.time() - 86400
         return [r for r in rows if _epoch(r.get("last_seen")) and _epoch(r.get("last_seen")) >= since]
 
+    def threat_candidates(self):
+        """Requêtes GET possibles pour les menaces IPS, essayées dans l'ordre.
+        (Les « traffic-flows » ne sont pas utilisés : ce sont les connexions,
+        donc les sites visités.)"""
+        site = urllib.parse.quote(self.site)
+        since_ms = int((time.time() - 86400) * 1000)
+        return [
+            ("v2 system-log/threat", f"/proxy/network/v2/api/site/{site}/system-log/threat",
+             {"start": since_ms, "end": int(time.time() * 1000), "pageSize": 200, "pageNumber": 0}),
+            ("stat/ips/event", self.net("stat/ips/event"), {"_limit": 200}),
+            ("stat/alarm", self.net("stat/alarm"), {"archived": "false"}),
+            ("stat/event", self.net("stat/event"), {"within": 24, "_limit": 500}),
+        ]
+
     def threats(self):
-        """Menaces IPS : stat/ips/event, sinon les alarmes IPS de stat/alarm."""
-        try:
-            rows = self.get(self.net("stat/ips/event"), {"_limit": 200})
-            if isinstance(rows, list):
-                return rows
-        except UnifiError:
-            pass
-        rows = self.get(self.net("stat/alarm"), {"archived": "false"}) or []
-        return [r for r in rows if "IPS" in str(r.get("key", "")).upper()]
+        """Menaces IPS : le premier endpoint GET qui répond est retenu.
+        Si aucun ne répond, la source est désactivée (nouvel essai 24 h plus tard).
+        Renvoie (lignes, nom de l'endpoint)."""
+        now = time.time()
+        if self.threats_disabled_until and now < self.threats_disabled_until:
+            raise ThreatsUnavailable(self.threats_reason)
+        candidates = self.threat_candidates()
+        if self.threats_endpoint:
+            candidates = [c for c in candidates if c[0] == self.threats_endpoint] + \
+                         [c for c in candidates if c[0] != self.threats_endpoint]
+        tried = []
+        for name, path, params in candidates:
+            try:
+                data = self.get(path, params)
+            except UnifiError as e:
+                tried.append(f"{name} {str(e).split(' sur ')[0]}")
+                continue
+            rows = threat_rows(data, name)
+            if rows is None:
+                tried.append(f"{name} format inconnu")
+                continue
+            self.threats_endpoint = name
+            return rows, name
+        self.threats_endpoint = None
+        self.threats_disabled_until = now + 86400
+        self.threats_reason = "aucune requête en lecture seule (GET) ne donne les menaces sur cette version ; essayé : " + ", ".join(tried)
+        raise ThreatsUnavailable(self.threats_reason)
 
 
 # ---------------------------------------------------------------------------
 # Transformation (fonctions pures, testées) : on ne garde que des champs choisis
 # ---------------------------------------------------------------------------
+
+IPS_KEY = ("IPS", "THREAT", "INTRUSION")
+
+
+def threat_rows(data, endpoint: str):
+    """Extrait la liste des menaces d'une réponse ; None si la forme est inconnue."""
+    if isinstance(data, dict):
+        for key in ("data", "items", "threats", "events"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+        else:
+            return None
+    if not isinstance(data, list):
+        return None
+    rows = [r for r in data if isinstance(r, dict)]
+    if endpoint in ("stat/alarm", "stat/event"):  # journaux généraux : garder l'IPS
+        rows = [r for r in rows if any(k in str(r.get("key", "")).upper() for k in IPS_KEY)
+                or r.get("inner_alert_signature")]
+    return rows
+
 
 def _epoch(v):
     """Secondes depuis 1970 (accepte des millisecondes)."""
@@ -308,17 +368,21 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
 def map_threats(rows, secret: str):
     out = []
     for t in rows or []:
-        key = t.get("_id") or f"{t.get('timestamp') or t.get('time')}-{t.get('inner_alert_signature_id') or t.get('signature')}"
-        title = clean_text(t.get("inner_alert_signature") or t.get("signature") or t.get("msg"), 200)
-        at = _iso(t.get("timestamp") or t.get("time"))
+        key = t.get("_id") or t.get("id") or f"{t.get('timestamp') or t.get('time')}-{t.get('inner_alert_signature_id') or t.get('signature')}"
+        title = redact(t.get("inner_alert_signature") or t.get("signature") or t.get("title")
+                       or t.get("message") or t.get("msg"), 200)
+        at = _iso(t.get("timestamp") or t.get("time") or t.get("datetime_ms"))
+        if at is None and isinstance(t.get("datetime"), str):
+            at = t["datetime"][:19] + "Z" if len(t["datetime"]) >= 19 else None
         if not title or not at:
             continue
         out.append({
             "id": hashed_id(str(key), secret, is_mac=False),
             "at": at,
             "title": title,
-            "severity": clean_text(t.get("inner_alert_severity") or t.get("severity"), 30),
-            "category": clean_text(t.get("inner_alert_category") or t.get("catname") or t.get("category"), 80),
+            "severity": clean_text(t.get("inner_alert_severity") or t.get("severity") or t.get("risk"), 30),
+            "category": clean_text(t.get("inner_alert_category") or t.get("catname") or t.get("subcategory")
+                                   or t.get("category"), 80),
             "action": clean_text(t.get("inner_alert_action") or t.get("action"), 30),
         })
     return out[:500]
