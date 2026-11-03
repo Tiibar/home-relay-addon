@@ -1,5 +1,5 @@
 name: Home Relay
-version: "1.0.2"
+version: "1.0.3"
 slug: home_relay
 description: Relais en lecture seule de la passerelle UniFi locale et de Home Assistant vers le tableau de bord de la maison (Supabase). Ne commande rien.
 url: https://github.com/Tiibar/home-relay-addon

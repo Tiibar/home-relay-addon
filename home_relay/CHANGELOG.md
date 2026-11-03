@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.3
+
+- Parc : appareils indisponibles regroupés **par appareil** (nom de l'appareil
+  et pièce), grâce aux registres de Home Assistant lus par WebSocket
+  (commandes de lecture uniquement). Une vanne Tado = 1 ligne.
+- Ignorés : entités non physiques (update, button, select, scene, number…),
+  groupes, entités de diagnostic/configuration, services (météo…).
+- Lumières Hue indisponibles classées à part (« éteintes à l'interrupteur »).
+- Piles par appareil : capteur `battery` en %, attribut `battery_level`
+  (capteurs Hue), et `binary_sensor` `battery` (pile faible oui/non).
+  Liste complète, triée par niveau.
+
 ## 1.0.2
 
 - Home Assistant : le jeton du Supervisor est lu dans l'environnement, sinon

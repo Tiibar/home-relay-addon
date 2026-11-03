@@ -56,10 +56,22 @@ ouvre la session ; elle ne modifie rien.
 | Menaces IPS | essayées dans l'ordre, en GET : `v2/api/site/<site>/system-log/threat`, `stat/ips/event`, `stat/alarm`, `stat/event` (alertes IPS seulement) ; la première qui répond est retenue | titre (signature, adresses masquées), gravité, catégorie, action (bloquée/détectée), date |
 
 Home Assistant (API du Supervisor, `homeassistant_api: true`, sans jeton
-longue durée) : `GET /api/config` (version) et `GET /api/states` :
+longue durée) : `GET /api/config` (version), `GET /api/states`, et par
+WebSocket les trois commandes de **lecture** des registres
+(`config/device_registry/list`, `config/entity_registry/list`,
+`config/area_registry/list` ; aucune autre commande n'est possible,
+voir `hass_ws.READ_ONLY`) :
 
-- piles : capteurs `device_class: battery` en % ;
-- entités indisponibles (état `unavailable`) ;
+- piles **par appareil** : capteur `device_class: battery` en %, attribut
+  `battery_level` (capteurs Hue), `binary_sensor` `device_class: battery`
+  (pile faible oui/non, par ex. HomeKit) ; liste complète triée par niveau ;
+- appareils indisponibles **par appareil** (nom + pièce) : « hors ligne » si
+  toutes ses entités principales sont indisponibles, « en partie » sinon ;
+  les lumières Hue indisponibles sont classées à part (éteintes à
+  l'interrupteur). Ignorés : entités non physiques (`update`, `button`,
+  `select`, `scene`, `number`…), groupes, entités de diagnostic ou de
+  configuration, services (météo…). Sans registres (erreur affichée), repli
+  sur la liste des entités indisponibles ;
 - chauffage : température, humidité et consigne des entités choisies ;
 - alarme : **état** des entités choisies (lecture seule) ;
 - mises à jour en attente (entités `update.*` à `on`).

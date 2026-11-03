@@ -151,14 +151,100 @@ class HomeAssistantMapping(unittest.TestCase):
         {"entity_id": "binary_sensor.somfy_etat", "state": "off", "attributes": {"friendly_name": "Alarme état"}},
     ]
 
-    def test_map(self):
-        out = homeassistant.map_states({"version": "2026.11.0"}, self.STATES, alarm_entities=["binary_sensor.somfy_etat"])
-        self.assertEqual(out["batteries"], [{"entity_id": "sensor.porte_battery", "name": "Porte batterie", "level": 18.0}])
+    def test_map_without_registry(self):
+        """Repli sans registres : par entité, sans les entités non physiques."""
+        states = self.STATES + [{"entity_id": "button.reboot", "state": "unavailable", "attributes": {}}]
+        out = homeassistant.map_states({"version": "2026.11.0"}, states, alarm_entities=["binary_sensor.somfy_etat"])
+        self.assertEqual(out["batteries"], [{"name": "Porte batterie", "area": None, "level": 18.0, "low": None}])
         self.assertEqual(out["unavailable"], [{"entity_id": "light.garage", "name": "Garage"}])
+        self.assertEqual(out["unavailable_devices"], [])
         self.assertEqual(out["climate"], [{"name": "Salon", "temperature": 20.5, "humidity": 48.0, "target": 21.0}])
         self.assertEqual(out["updates"][0]["latest"], "2026.11.1")
         self.assertEqual(out["alarm"], [{"name": "Alarme état", "state": "off"}])
         self.assertEqual(out["version"], "2026.11.0")
+
+
+def st(eid, state, **attrs):
+    return {"entity_id": eid, "state": state, "attributes": attrs}
+
+
+class HomeAssistantByDevice(unittest.TestCase):
+    """Cas réels : vanne Tado (HomeKit) hors ligne, lumières Hue, piles."""
+
+    REGISTRY = {
+        "areas": [{"area_id": "sam", "name": "Salle à manger"}, {"area_id": "hall", "name": "Hall d'entrée"},
+                  {"area_id": "bureau", "name": "Bureau A&L"}, {"area_id": "salon", "name": "Salon"}],
+        "devices": [
+            {"id": "d_tado_sam", "name": "Tado Thermostat SàM", "manufacturer": "tado", "model": "VA02", "area_id": "sam"},
+            {"id": "d_tado_bureau", "name": "Thermostat Bureau", "name_by_user": "Tado Bureau A&L", "manufacturer": "tado", "area_id": "bureau"},
+            {"id": "d_hue_lamp", "name": "Lampe salon", "manufacturer": "Signify Netherlands B.V.", "area_id": "salon"},
+            {"id": "d_hue_sensor", "name": "Sensor Hall d'entrée", "manufacturer": "Signify Netherlands B.V.", "area_id": "hall"},
+            {"id": "d_shelly", "name": "Shelly garage", "manufacturer": "Shelly"},
+            {"id": "d_meteo", "name": "Météo", "entry_type": "service"},
+        ],
+        "entities": [
+            {"entity_id": "climate.tado_sam", "device_id": "d_tado_sam", "platform": "homekit_controller"},
+            {"entity_id": "sensor.tado_sam_temperature", "device_id": "d_tado_sam", "platform": "homekit_controller"},
+            {"entity_id": "sensor.tado_sam_humidity", "device_id": "d_tado_sam", "platform": "homekit_controller"},
+            {"entity_id": "select.tado_sam_unit", "device_id": "d_tado_sam", "platform": "homekit_controller", "entity_category": "config"},
+            {"entity_id": "binary_sensor.tado_bureau_low_battery", "device_id": "d_tado_bureau", "platform": "homekit_controller", "entity_category": "diagnostic"},
+            {"entity_id": "climate.tado_bureau", "device_id": "d_tado_bureau", "platform": "homekit_controller"},
+            {"entity_id": "light.lampe_salon", "device_id": "d_hue_lamp", "platform": "hue"},
+            {"entity_id": "light.salon_groupe", "platform": "hue"},
+            {"entity_id": "binary_sensor.hall_motion", "device_id": "d_hue_sensor", "platform": "hue"},
+            {"entity_id": "switch.shelly_garage", "device_id": "d_shelly", "platform": "shelly"},
+            {"entity_id": "sensor.shelly_garage_signal", "device_id": "d_shelly", "platform": "shelly", "entity_category": "diagnostic"},
+            {"entity_id": "update.shelly_garage_firmware", "device_id": "d_shelly", "platform": "shelly"},
+            {"entity_id": "weather.maison", "device_id": "d_meteo", "platform": "met"},
+            {"entity_id": "light.vieux_shelly", "device_id": "d_shelly", "platform": "shelly", "disabled_by": "user"},
+        ],
+    }
+    STATES = [
+        st("climate.tado_sam", "unavailable", friendly_name="Tado SàM"),
+        st("sensor.tado_sam_temperature", "unavailable"),
+        st("sensor.tado_sam_humidity", "unavailable"),
+        st("select.tado_sam_unit", "unavailable"),
+        st("binary_sensor.tado_bureau_low_battery", "on", device_class="battery"),
+        st("climate.tado_bureau", "heat", current_temperature=19.5, current_humidity=52, temperature=20),
+        st("light.lampe_salon", "unavailable"),
+        st("light.salon_groupe", "unavailable", is_hue_group=True),
+        st("binary_sensor.hall_motion", "off", device_class="motion", battery_level=22),
+        st("switch.shelly_garage", "on"),
+        st("sensor.shelly_garage_signal", "unavailable"),
+        st("update.shelly_garage_firmware", "unavailable"),
+        st("weather.maison", "unavailable"),
+        st("light.groupe_cuisine", "unavailable", entity_id=["light.a", "light.b"]),
+        st("scene.soir", "unavailable"),
+    ]
+
+    def setUp(self):
+        self.out = homeassistant.map_states({"version": "2026.11.0"}, self.STATES, registry=self.REGISTRY)
+
+    def test_one_line_per_device(self):
+        u = self.out["unavailable_devices"]
+        self.assertEqual([(d["name"], d["area"], d["status"]) for d in u], [
+            ("Tado Thermostat SàM", "Salle à manger", "offline"),
+            ("Lampe salon", "Salon", "hue_off"),
+        ])
+        self.assertEqual((u[0]["unavailable"], u[0]["total"]), (3, 3))   # le réglage « unité » ne compte pas
+
+    def test_ignores_groups_non_physical_and_diagnostics(self):
+        names = {d["name"] for d in self.out["unavailable_devices"]}
+        self.assertNotIn("Shelly garage", names)   # seul son capteur de diagnostic / sa mise à jour sont indisponibles
+        self.assertNotIn("Météo", names)
+        self.assertEqual(self.out["unavailable"], [])
+
+    def test_batteries_all_sources_sorted(self):
+        b = self.out["batteries"]
+        self.assertEqual(b[0], {"name": "Tado Bureau A&L", "area": "Bureau A&L", "level": None, "low": True})
+        self.assertEqual(b[1], {"name": "Sensor Hall d'entrée", "area": "Hall d'entrée", "level": 22.0, "low": None})
+
+    def test_climate_uses_device_names(self):
+        self.assertIn({"name": "Tado Bureau A&L", "temperature": 19.5, "humidity": 52.0, "target": 20.0}, self.out["climate"])
+
+    def test_no_entity_id_needed_for_display(self):
+        for d in self.out["unavailable_devices"] + self.out["batteries"]:
+            self.assertNotIn("entity_id", d)
 
 
 class SendQueue(unittest.TestCase):
@@ -200,7 +286,8 @@ class Options(unittest.TestCase):
             self.assertEqual(main.load_options(p)["shared_secret"], SECRET)
 
     def test_version_matches_config(self):
-        cfg = open(os.path.join(os.path.dirname(__file__), "..", "home_relay", "config.yaml"), encoding="utf-8").read()
+        with open(os.path.join(os.path.dirname(__file__), "..", "home_relay", "config.yaml"), encoding="utf-8") as f:
+            cfg = f.read()
         self.assertIn(f'version: "{main.VERSION}"', cfg)
 
 
@@ -274,11 +361,13 @@ class Threats(unittest.TestCase):
         c = FakeClient({"stat/device": DEVICES, "stat/sta": CLIENTS_NOW, "rest/networkconf": NETWORKS,
                         "stat/health": [], "clients/history": []})
         orig = homeassistant.read
-        homeassistant.read = lambda: ({"version": "2026.11.0"}, [])
+        homeassistant.read = lambda: {"config": {"version": "2026.11.0"}, "states": [], "registry": None,
+                                      "registry_error": "test"}
         try:
             p = main.collect({"shared_secret": SECRET}, c)
         finally:
             homeassistant.read = orig
         self.assertTrue(p["sources"]["unifi_threats"].startswith("désactivée"))
         self.assertEqual(p["sources"]["home_assistant"], "ok")
+        self.assertEqual(p["sources"]["home_assistant_registry"], "erreur : test")
         self.assertEqual(p["unifi"]["threats"], [])
