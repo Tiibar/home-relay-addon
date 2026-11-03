@@ -563,6 +563,25 @@ class NetworkOfClient(unittest.TestCase):
         self.assertEqual(out, {"Apple TV": "IoT (VLAN 20)", "HomePod": "IoT", "iPad": "WifiMaison", "Mac": "Famille"})
 
 
+class CompanionApp(unittest.TestCase):
+    def test_phones_of_the_companion_app_are_not_in_the_parc(self):
+        states = [
+            {"entity_id": "sensor.lou_battery_level", "state": "40", "attributes": {"device_class": "battery", "unit_of_measurement": "%"}},
+            {"entity_id": "sensor.lou_ssid", "state": "unavailable", "attributes": {}},
+            {"entity_id": "sensor.porte_battery", "state": "60", "attributes": {"device_class": "battery", "unit_of_measurement": "%"}},
+        ]
+        registry = {
+            "devices": [{"id": "p", "name": "Lou", "manufacturer": "Apple", "model": "iPhone"}, {"id": "d", "name": "Porte"}],
+            "entities": [{"entity_id": "sensor.lou_battery_level", "device_id": "p", "platform": "mobile_app"},
+                         {"entity_id": "sensor.lou_ssid", "device_id": "p", "platform": "mobile_app"},
+                         {"entity_id": "sensor.porte_battery", "device_id": "d", "platform": "zha"}],
+            "areas": [],
+        }
+        out = homeassistant.map_states({}, states, registry=registry)
+        self.assertEqual([b["name"] for b in out["batteries"]], ["Porte"])
+        self.assertEqual(out["unavailable_devices"], [])
+
+
 class AlarmReadOnly(unittest.TestCase):
     """Panneau d'alarme désactivé volontairement : entités Somfy restantes, sinon « non suivi »."""
 

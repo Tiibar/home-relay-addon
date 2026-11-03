@@ -190,6 +190,10 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
     devices: dict[str, dict] = {}       # clé appareil -> suivi disponibilité
     batteries: dict[str, dict] = {}     # clé appareil -> pile
     unavailable_entities = []           # sans registres seulement (repli)
+    # Téléphones et tablettes de l'application Home Assistant (Companion App,
+    # intégration « mobile_app ») : pas des appareils de la maison, exclus du Parc.
+    mobile_devices = {e.get("device_id") for e in reg_index.entities.values()
+                      if e.get("platform") == "mobile_app" and e.get("device_id")}
 
     for eid, s in by_id.items():
         attrs = s.get("attributes") or {}
@@ -210,6 +214,9 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
                 "installed": clean_text(attrs.get("installed_version"), 40),
                 "latest": clean_text(attrs.get("latest_version"), 40),
             })
+
+        if reg.get("platform") == "mobile_app" or (dev and dev.get("id") in mobile_devices):
+            continue
 
         # ---- piles (quel que soit l'état des autres entités) ----
         level, low = None, None

@@ -100,6 +100,9 @@ voir `hass_ws.READ_ONLY`) :
   indique « désactivée : état non suivi volontairement (lecture seule) » :
   c'est un choix, pas une panne ;
 - mises à jour en attente (entités `update.*` à `on`).
+- exclus : les téléphones et tablettes de l'application Home Assistant
+  (Companion App, intégration `mobile_app`), qui ne sont pas des appareils de
+  la maison.
 
 ### Limites connues
 

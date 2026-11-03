@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.10
+
+- Parc : les téléphones et tablettes de l'application Home Assistant
+  (Companion App, intégration `mobile_app`) ne sont plus comptés parmi les
+  appareils de la maison (piles, hors ligne).
+
 ## 1.0.9
 
 - Menaces : **source** et **cible** distinguées (nom de l'appareil de la
