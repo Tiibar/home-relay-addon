@@ -45,4 +45,7 @@ jobs:
           docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 home-relay:${{ matrix.arch }} -c \
             "import sys, platform; sys.path.insert(0, '/app'); import main, unifi, homeassistant, sender, privacy; print('OK', main.VERSION, sys.version.split()[0], platform.machine())"
       - name: Version identique (config.yaml / code)
-        run: grep -q "version: \"$(docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 home-relay:${{ matrix.arch }} -c "import sys; sys.path.insert(0,'/app'); import main; print(main.VERSION)")\"" home_relay/config.yaml
+        run: |
+          v=$(docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 home-relay:${{ matrix.arch }} -c "import sys; sys.path.insert(0,'/app'); import main; print(main.VERSION)")
+          echo "Version dans l'image : $v"
+          grep -q "^version: \"$v\"" home_relay/config.yaml
