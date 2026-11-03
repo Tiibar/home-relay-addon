@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.11
+
+- Parc : numéro de série des appareils hors ligne (registre de Home
+  Assistant, ex. vannes Tado via HomeKit), pour reconnaître le bon appareil
+  dans l'application du fabricant.
+
 ## 1.0.10
 
 - Parc : les téléphones et tablettes de l'application Home Assistant

@@ -246,6 +246,8 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
         d = devices.setdefault(key, {
             "name": label, "area": area,
             "manufacturer": clean_text(dev.get("manufacturer"), 60), "model": clean_text(dev.get("model"), 60),
+            # numéro de série (HomeKit, ex. vanne Tado) : pour reconnaître l'appareil dans l'app du fabricant
+            "serial": clean_text(dev.get("serial_number"), 40),
             "total": 0, "unavailable": 0, "hue_light": False,
         })
         if domain == "light" and _is_hue(dev, reg):
@@ -261,7 +263,7 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
             continue
         status = "hue_off" if d["hue_light"] and d["unavailable"] == d["total"] else \
                  "offline" if d["unavailable"] == d["total"] else "partial"
-        unavailable_devices.append({k: d[k] for k in ("name", "area", "manufacturer", "model", "unavailable", "total")}
+        unavailable_devices.append({k: d[k] for k in ("name", "area", "manufacturer", "model", "serial", "unavailable", "total")}
                                    | {"status": status})
     order = {"offline": 0, "partial": 1, "hue_off": 2}
     unavailable_devices.sort(key=lambda d: (order[d["status"]], d["area"] or "~", d["name"]))

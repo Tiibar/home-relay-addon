@@ -179,7 +179,7 @@ class HomeAssistantByDevice(unittest.TestCase):
         "areas": [{"area_id": "sam", "name": "Salle à manger"}, {"area_id": "hall", "name": "Hall d'entrée"},
                   {"area_id": "bureau", "name": "Bureau A&L"}, {"area_id": "salon", "name": "Salon"}],
         "devices": [
-            {"id": "d_tado_sam", "name": "Tado Thermostat SàM", "manufacturer": "tado", "model": "VA02", "area_id": "sam"},
+            {"id": "d_tado_sam", "name": "Tado Thermostat SàM", "manufacturer": "tado", "model": "VA02", "area_id": "sam", "serial_number": "VA0000000001"},
             {"id": "d_tado_bureau", "name": "Thermostat Bureau", "name_by_user": "Tado Bureau A&L", "manufacturer": "tado", "area_id": "bureau"},
             {"id": "d_hue_lamp", "name": "Lampe salon", "manufacturer": "Signify Netherlands B.V.", "area_id": "salon"},
             {"id": "d_hue_sensor", "name": "Sensor Hall d'entrée", "manufacturer": "Signify Netherlands B.V.", "area_id": "hall"},
@@ -231,6 +231,7 @@ class HomeAssistantByDevice(unittest.TestCase):
             ("Lampe salon", "Salon", "hue_off"),
         ])
         self.assertEqual((u[0]["unavailable"], u[0]["total"]), (3, 3))   # le réglage « unité » ne compte pas
+        self.assertEqual(u[0]["serial"], "VA0000000001")                 # pour le retrouver dans l'app Tado
 
     def test_ignores_groups_non_physical_and_diagnostics(self):
         names = {d["name"] for d in self.out["unavailable_devices"]}
