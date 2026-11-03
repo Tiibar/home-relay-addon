@@ -13,6 +13,9 @@
 - Alarme : si le panneau a été désactivé volontairement dans Home Assistant,
   lecture de l'état sur les entités Somfy restantes (SomfyProtect2MQTT) ;
   sinon « état non suivi volontairement (lecture seule) ».
+- Réseau d'un appareil : quand UniFi ne remplit pas le champ `network`
+  (Apple TV…), il est retrouvé par le dernier réseau de connexion, l'identifiant
+  du réseau, le numéro de VLAN ou le nom du Wi-Fi.
 
 ## 1.0.7
 

@@ -530,6 +530,21 @@ class SystemLogCategories(unittest.TestCase):
         self.assertIsNone(IP.search(json.dumps(out)))
 
 
+class NetworkOfClient(unittest.TestCase):
+    """Un client sans champ `network` (ex. Apple TV) n'est pas « sans réseau »."""
+
+    def test_fallbacks(self):
+        nets = [{"_id": "n1", "name": "Famille"}, {"_id": "n3", "name": "IoT", "vlan": 20}]
+        rows = [
+            {"mac": "aa:00:00:00:00:41", "name": "Apple TV", "is_wired": True, "vlan": 20},
+            {"mac": "aa:00:00:00:00:42", "name": "HomePod", "last_connection_network_id": "n3"},
+            {"mac": "aa:00:00:00:00:43", "name": "iPad", "essid": "WifiMaison"},
+            {"mac": "aa:00:00:00:00:44", "name": "Mac", "last_connection_network_name": "Famille"},
+        ]
+        out = {c["name"]: c["network"] for c in unifi.map_clients(rows, [], nets, [], SECRET)}
+        self.assertEqual(out, {"Apple TV": "IoT (VLAN 20)", "HomePod": "IoT", "iPad": "WifiMaison", "Mac": "Famille"})
+
+
 class AlarmReadOnly(unittest.TestCase):
     """Panneau d'alarme désactivé volontairement : entités Somfy restantes, sinon « non suivi »."""
 

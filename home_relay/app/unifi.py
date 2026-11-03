@@ -434,9 +434,16 @@ def map_devices(devices, secret: str):
     return out
 
 
-def _network_name(c, networks_by_id):
-    name = clean_text(c.get("network")) or clean_text(c.get("network_name")) or networks_by_id.get(c.get("network_id"))
+def _network_name(c, networks_by_id, networks_by_vlan=None):
+    """Réseau d'un client. UniFi ne remplit pas toujours `network` (clients vus
+    sur 24 h, certains appareils Apple…) : on essaie aussi le dernier réseau de
+    connexion, l'identifiant du réseau, le numéro de VLAN, puis le nom du Wi-Fi."""
     vlan = _int(c.get("vlan"), 0, 4094)
+    name = (clean_text(c.get("network")) or clean_text(c.get("network_name"))
+            or clean_text(c.get("last_connection_network_name"))
+            or networks_by_id.get(c.get("network_id")) or networks_by_id.get(c.get("last_connection_network_id"))
+            or (networks_by_vlan or {}).get(vlan)
+            or clean_text(c.get("essid")) or clean_text(c.get("last_connection_essid")))
     if name and vlan:
         return f"{name} (VLAN {vlan})"
     return name
@@ -451,6 +458,8 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
     now = now or time.time()
     names = device_names(devices)
     networks_by_id = {n.get("_id"): clean_text(n.get("name"), 60) for n in networks or [] if n.get("_id")}
+    networks_by_vlan = {_int(n.get("vlan"), 0, 4094): clean_text(n.get("name"), 60)
+                        for n in networks or [] if _int(n.get("vlan"), 1, 4094)}
     out, seen = [], set()
 
     for c in now_rows or []:
@@ -474,7 +483,7 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
             "name": _client_name(c),
             "vendor": clean_text(c.get("oui"), 60),
             "wired": wired,
-            "network": _network_name(c, networks_by_id),
+            "network": _network_name(c, networks_by_id, networks_by_vlan),
             "uplink": uplink,
             "signal_dbm": None if wired else _signal(c.get("signal")),
             "online": True,
@@ -498,7 +507,7 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
             "name": _client_name(c),
             "vendor": clean_text(c.get("oui"), 60),
             "wired": bool(c.get("is_wired")) if c.get("is_wired") is not None else None,
-            "network": _network_name(c, networks_by_id),
+            "network": _network_name(c, networks_by_id, networks_by_vlan),
             "uplink": last_uplink,
             "signal_dbm": None,
             "online": False,
