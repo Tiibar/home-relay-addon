@@ -43,8 +43,21 @@ API UniFi utilisée : l'API **classique** de UniFi Network (sous
 « Integrations » (clé API) ne fournit pas les compteurs d'octets par client, la
 satisfaction Wi-Fi, l'occupation des canaux, les menaces IPS ni la santé WAN.
 
-Seule requête qui n'est pas un GET : la connexion (`POST /api/auth/login`), qui
-ouvre la session ; elle ne modifie rien.
+### Exception : deux requêtes qui ne sont pas des GET
+
+Le client HTTP du module refuse toute requête non-GET qui n'est pas dans une
+**liste blanche** (`ALLOWED_NON_GET` dans `unifi.py`, testée) :
+
+1. `POST /api/auth/login` : ouvre la session ;
+2. `POST /proxy/network/v2/api/site/<site>/system-log/all` : **recherche**
+   dans le journal système, avec uniquement les champs `timestampFrom`,
+   `timestampTo`, `pageSize`, `pageNumber`, `categories` (`["SECURITY"]`).
+   C'est la requête qu'utilise l'interface de UniFi Network 10 pour afficher
+   les menaces : elle lit, elle ne modifie rien.
+
+**Garde-fou principal** : le compte local « home-relay » est en **View Only**
+(lecture seule) pour UniFi Network. Même une requête erronée ne pourrait rien
+modifier sur la passerelle.
 
 | Donnée | Requête (GET) | Champs gardés |
 |---|---|---|
@@ -53,7 +66,7 @@ ouvre la session ; elle ne modifie rien.
 | Clients vus sur 24 h | `v2/api/site/<site>/clients/history?withinHours=24`, sinon `stat/alluser` filtré sur 24 h | nom, réseau, dernière borne, dernière apparition |
 | Noms des réseaux | `rest/networkconf` | nom du réseau (pour les clients qui n'ont que l'identifiant du réseau) |
 | Santé WAN, speedtest | `stat/health` (sinon `speedtest-status` de la passerelle) | état, fournisseur, latence, uptime, coupures ; date, débits et ping du dernier speedtest |
-| Menaces IPS | essayées dans l'ordre, en GET : `v2/api/site/<site>/system-log/threat`, `stat/ips/event`, `stat/alarm`, `stat/event` (alertes IPS seulement) ; la première qui répond est retenue | titre (signature, adresses masquées), gravité, catégorie, action (bloquée/détectée), date |
+| Menaces IPS | **POST** `v2/api/site/<site>/system-log/all` (recherche, catégorie `SECURITY` ; voir « Exception ») ; sur les versions anciennes, `stat/ips/event` puis `stat/alarm` en GET | titre, gravité, catégorie, date, direction (entrant/sortant si indiquée), bloquée ou non ; adresses IP/MAC remplacées par « [adresse] » |
 
 Home Assistant (API du Supervisor, `homeassistant_api: true`, sans jeton
 longue durée) : `GET /api/config` (version), `GET /api/states`, et par
@@ -83,13 +96,14 @@ voir `hass_ws.READ_ONLY`) :
   séparément et son résultat (`ok` ou le message d'erreur) est envoyé avec les
   données. Le journal du module et la section « Relais maison » de l'écran
   Réseau montrent ce qui a réellement été obtenu.
-- **Menaces IPS** : sur UniFi Network 10, `stat/alarm` n'existe plus (HTTP 404)
-  et l'interface lit le journal des menaces par une requête **POST**
-  (`system-log`), que ce module s'interdit. Si aucune des requêtes GET ne
-  répond, la source passe à « **désactivée** » (pas une erreur), avec la liste
-  des essais ; un nouvel essai a lieu 24 h plus tard (ou au redémarrage du
-  module). Les « traffic-flows » ne sont **pas** utilisés : ce sont les
-  connexions, donc les sites visités.
+- **Menaces IPS** : `stat/alarm` et `stat/ips/event` n'existent plus sur UniFi
+  Network 10 ; le journal système (exception ci-dessus) les remplace. Format
+  établi d'après des projets communautaires, pas d'après une documentation
+  officielle d'Ubiquiti. Si la recherche ne répond pas, la source passe à
+  « désactivée : menaces non disponibles sur cette passerelle » (le détail est
+  dans le journal du module) et un nouvel essai a lieu 24 h plus tard. Les
+  « traffic-flows » ne sont **pas** utilisés : ce sont les connexions, donc les
+  sites visités.
 - **Jeton Home Assistant** : fourni par le Supervisor (`homeassistant_api:
   true`). Sur les images de base récentes (s6-overlay v3), il est lu dans
   `/run/s6/container_environment/` quand il n'est pas dans l'environnement.

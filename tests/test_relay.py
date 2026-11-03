@@ -11,6 +11,7 @@ import re
 import sys
 import tempfile
 import unittest
+import urllib.error
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "home_relay", "app"))
 
@@ -307,59 +308,135 @@ class SupervisorToken(unittest.TestCase):
 
 
 class FakeClient(unifi.UnifiClient):
+    """Passerelle simulée : remplace seulement l'envoi réseau (_send) ; la liste
+    blanche (_allowed) reste celle du vrai client."""
+
     def __init__(self, answers):
         super().__init__("https://gw.invalid", "u", "p")
         self.answers, self.calls = answers, []
 
-    def get(self, path, params=None):
-        self.calls.append(path)
-        for key, value in self.answers.items():
-            if path.endswith(key):
-                if isinstance(value, Exception):
-                    raise value
+    def _send(self, method, path, params, body):
+        self.calls.append((method, path, body))
+        if method == "POST" and path == unifi.LOGIN_PATH:
+            return {}
+        for (m, key), value in self.answers.items():
+            if m == method and path.endswith(key):
+                value = value(body) if callable(value) else value
+                if isinstance(value, int):
+                    raise urllib.error.HTTPError(path, value, "erreur", {}, None)
                 return value
-        raise unifi.UnifiError("HTTP 404 sur " + path)
+        raise urllib.error.HTTPError(path, 404, "Not Found", {}, None)
+
+    def get(self, path, params=None):   # les tests GET répondent sans enveloppe « data »
+        return super().get(path, params)
+
+
+SYSLOG = "system-log/all"
+THREAT = {"id": "65f0", "timestamp": 1762171000000, "category": "SECURITY", "subcategory": "INTRUSION_PREVENTION",
+          "key": "THREAT_BLOCKED_V3", "severity": "HIGH", "title_raw": "Threat blocked",
+          "message_raw": "{SRC_IP} tried to reach {CLIENT} — {SIGNATURE}",
+          "parameters": {"SRC_IP": {"id": "203.0.113.9"}, "CLIENT": {"id": "aa:00:00:00:00:09", "name": "TV salon"},
+                         "SIGNATURE": {"name": "ET SCAN Suspicious inbound"}}}
+
+
+class Whitelist(unittest.TestCase):
+    """Toute requête non-GET hors liste blanche est refusée AVANT l'envoi."""
+
+    def setUp(self):
+        self.c = FakeClient({})
+
+    def test_only_two_non_get_requests(self):
+        self.assertEqual(set(unifi.ALLOWED_NON_GET), {("POST", unifi.LOGIN_PATH), ("POST", unifi.SYSTEM_LOG_PATH)})
+
+    def test_refuses_other_posts_and_methods(self):
+        for method, path in [("POST", "/proxy/network/api/s/default/cmd/devmgr"),
+                             ("POST", "/proxy/network/v2/api/site/default/system-log/critical"),
+                             ("POST", "/proxy/network/v2/api/site/autre/system-log/all"),
+                             ("PUT", "/proxy/network/api/s/default/rest/networkconf/1"),
+                             ("DELETE", "/proxy/network/api/s/default/rest/user/1"),
+                             ("PATCH", unifi.LOGIN_PATH),
+                             ("POST", "/proxy/network/v2/api/site/default/system-log/all/../../cmd")]:
+            with self.assertRaises(unifi.ForbiddenRequest, msg=f"{method} {path}"):
+                self.c._request(method, path, body={})
+        self.assertEqual(self.c.calls, [])        # rien n'est parti
+
+    def test_refuses_unknown_body_fields(self):
+        path = unifi.SYSTEM_LOG_PATH.format(site="default")
+        with self.assertRaises(unifi.ForbiddenRequest):
+            self.c._request("POST", path, body={"timestampFrom": 1, "cmd": "restart"})
+        with self.assertRaises(unifi.ForbiddenRequest):
+            self.c._request("GET", "/proxy/network/api/s/default/stat/sta", body={"x": 1})
+        self.assertEqual(self.c.calls, [])
+
+    def test_allowed_search_goes_through(self):
+        self.c.answers = {("POST", SYSLOG): {"data": [], "total_element_count": 0}}
+        self.c.search_system_log(0, 1)
+        method, path, body = self.c.calls[-1]
+        self.assertEqual((method, path), ("POST", "/proxy/network/v2/api/site/default/system-log/all"))
+        self.assertEqual(set(body), {"timestampFrom", "timestampTo", "pageSize", "pageNumber", "categories"})
+        self.assertEqual(body["categories"], ["SECURITY"])
 
 
 class Threats(unittest.TestCase):
-    def test_first_get_endpoint_that_answers_is_kept(self):
-        c = FakeClient({"system-log/threat": unifi.UnifiError("HTTP 405 sur x"),
-                        "stat/ips/event": [{"_id": "1", "inner_alert_signature": "ET SCAN", "timestamp": 1762171000000}]})
+    def test_system_log_threats_redacted_with_direction_and_blocked(self):
+        c = FakeClient({("POST", SYSLOG): {"data": [THREAT, {"id": "x", "timestamp": 1762171000000,
+                                                             "category": "CLIENT_DEVICES", "key": "CLIENT_ROAMED"}],
+                                           "total_element_count": 2}})
+        rows, name = c.threats()
+        self.assertEqual((name, len(rows)), ("system-log", 1))     # seule la catégorie SECURITY est gardée
+        t = unifi.map_threats(rows, SECRET)[0]
+        self.assertEqual(t["title"], "Threat blocked")
+        self.assertEqual((t["severity"], t["category"], t["blocked"], t["action"]), ("HIGH", "INTRUSION_PREVENTION", True, "blocked"))
+        self.assertIsNone(t["direction"])                         # pas indiquée : rien d'inventé
+        self.assertIsNone(IP.search(json.dumps(t)))
+        self.assertIsNone(MAC.search(json.dumps(t)))
+
+    def test_message_rendered_and_redacted_when_no_title(self):
+        t = unifi.map_threats([{**THREAT, "title_raw": None, "key": "THREAT_DETECTED_INBOUND"}], SECRET)[0]
+        self.assertEqual(t["title"], "[adresse] tried to reach TV salon — ET SCAN Suspicious inbound")
+        self.assertEqual((t["direction"], t["blocked"]), ("entrant", False))
+
+    def test_category_filter_refused_then_filtered_locally(self):
+        seen = []
+
+        def answer(body):
+            seen.append(body.get("categories"))
+            return 400 if body.get("categories") else {"data": [THREAT], "total_element_count": 1}
+        c = FakeClient({("POST", SYSLOG): answer})
+        rows, _ = c.threats()
+        self.assertEqual((seen, len(rows)), ([["SECURITY"], None], 1))
+
+    def test_pages_and_window_since_last_read(self):
+        page = [dict(THREAT, id=f"t{i}") for i in range(100)]
+        c = FakeClient({("POST", SYSLOG): lambda b: {"data": page if b["pageNumber"] == 0 else page[:3],
+                                                    "total_element_count": 103}})
+        rows, _ = c.threats()
+        self.assertEqual(len(rows), 103)
+        first_until = c.calls[-1][2]["timestampTo"]
+        c.threats()
+        self.assertEqual(c.calls[-1][2]["timestampFrom"], first_until)   # pas de relecture de 24 h
+
+    def test_legacy_get_still_used_on_old_versions(self):
+        c = FakeClient({("POST", SYSLOG): 405,
+                        ("GET", "stat/ips/event"): [{"_id": "1", "inner_alert_signature": "ET SCAN", "timestamp": 1762171000000}]})
         rows, name = c.threats()
         self.assertEqual((len(rows), name), (1, "stat/ips/event"))
-        c.calls.clear()
-        c.threats()
-        self.assertTrue(c.calls[0].endswith("stat/ips/event"))   # retenu, essayé en premier
 
-    def test_v2_shape_and_redaction(self):
-        c = FakeClient({"system-log/threat": {"data": [{"id": "x", "timestamp": 1762171000000, "severity": "HIGH",
-                        "category": "SECURITY", "subcategory": "Scan",
-                        "message": "Threat blocked from " + "203.0.113.9" + " to " + "198.51.100.50"}]}})
-        rows, name = c.threats()
-        self.assertEqual(name, "v2 system-log/threat")
-        t = unifi.map_threats(rows, SECRET)[0]
-        self.assertEqual(t["title"], "Threat blocked from [adresse] to [adresse]")
-        self.assertEqual((t["severity"], t["category"]), ("HIGH", "Scan"))
-
-    def test_general_logs_keep_only_ips(self):
-        c = FakeClient({"stat/event": [{"key": "EVT_WU_Connected", "msg": "x"},
-                                       {"key": "EVT_IPS_IpsAlert", "msg": "alerte", "time": 1762171000000}]})
-        rows, name = c.threats()
-        self.assertEqual((name, len(rows)), ("stat/event", 1))
-
-    def test_disabled_cleanly_when_nothing_answers(self):
+    def test_disabled_cleanly_with_short_message(self):
         c = FakeClient({})
         with self.assertRaises(unifi.ThreatsUnavailable) as e:
             c.threats()
-        self.assertIn("HTTP 404", str(e.exception))
+        self.assertEqual(str(e.exception), "menaces non disponibles sur cette passerelle")
+        self.assertIn("HTTP 404", c.threats_reason)                # détail gardé pour le journal du module
         n = len(c.calls)
         with self.assertRaises(unifi.ThreatsUnavailable):
             c.threats()
         self.assertEqual(len(c.calls), n)                         # pas de nouvel essai avant 24 h
 
     def test_collect_reports_disabled_source(self):
-        c = FakeClient({"stat/device": DEVICES, "stat/sta": CLIENTS_NOW, "rest/networkconf": NETWORKS,
-                        "stat/health": [], "clients/history": []})
+        c = FakeClient({("GET", "stat/device"): DEVICES, ("GET", "stat/sta"): CLIENTS_NOW,
+                        ("GET", "rest/networkconf"): NETWORKS, ("GET", "stat/health"): [],
+                        ("GET", "clients/history"): []})
         orig = homeassistant.read
         homeassistant.read = lambda: {"config": {"version": "2026.11.0"}, "states": [], "registry": None,
                                       "registry_error": "test"}

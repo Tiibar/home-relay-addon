@@ -18,7 +18,8 @@ Documentation complète (options, vie privée, données lues, limites) :
 
 - Aucun secret, aucune adresse IP ou MAC, aucune URL de projet en dur : tout
   passe par la configuration de l'add-on (contrôlé par la CI).
-- Uniquement des lectures (GET), sauf la connexion à la passerelle UniFi.
+- Uniquement des lectures (GET), sauf deux requêtes en liste blanche stricte :
+  la connexion, et la recherche des menaces dans le journal (compte View Only).
 - Adresses MAC hachées (HMAC-SHA256) avant envoi ; aucune adresse IP envoyée ;
   jamais de sites visités ni de DNS.
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.4
+
+- Menaces IPS sur UniFi Network 9/10 : **une** requête de recherche POST,
+  `v2/api/site/<site>/system-log/all` (catégorie SECURITY), celle qu'utilise
+  l'interface UniFi. Elle ne modifie rien ; le compte « home-relay » est en
+  View Only.
+- Liste blanche stricte dans le client HTTP : seules deux requêtes non-GET
+  sont possibles (connexion et cette recherche, avec les seuls champs de
+  recherche) ; toute autre est refusée avant l'envoi.
+- Données des menaces : titre, gravité, catégorie, date, direction
+  (entrant/sortant, si la passerelle l'indique), bloquée ou non ; adresses
+  IP/MAC (v4 et v6) remplacées par « [adresse] ».
+- Lecture depuis la dernière fois (24 h au premier passage), par pages de 100.
+- Si rien ne répond : source « désactivée » avec un message court ; le détail
+  reste dans le journal du module.
+
 ## 1.0.3
 
 - Parc : appareils indisponibles regroupés **par appareil** (nom de l'appareil

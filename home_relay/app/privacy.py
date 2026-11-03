@@ -29,6 +29,30 @@ def hashed_id(value: str, secret: str, *, is_mac: bool = True) -> str:
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _MAC = re.compile(r"\b[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}\b", re.I)
+_IPV6 = re.compile(r"(?<![\w:.])[0-9a-f:]*:[0-9a-f:]*:[0-9a-f:.]*(?![\w:])", re.I)
+
+
+def _has_ipv6(s: str) -> bool:
+    import ipaddress
+    for m in _IPV6.finditer(s):
+        try:
+            ipaddress.IPv6Address(m.group(0))
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _sub_ipv6(s: str) -> str:
+    import ipaddress
+
+    def one(m):
+        try:
+            ipaddress.IPv6Address(m.group(0))
+            return "[adresse]"
+        except ValueError:
+            return m.group(0)
+    return _IPV6.sub(one, s)
 
 
 def clean_text(value, max_len: int = 120):
@@ -36,7 +60,7 @@ def clean_text(value, max_len: int = 120):
     if value is None:
         return None
     s = str(value).strip()[:max_len]
-    if not s or _IPV4.search(s) or _MAC.search(s):
+    if not s or _IPV4.search(s) or _MAC.search(s) or _has_ipv6(s):
         return None
     return s
 
@@ -45,5 +69,5 @@ def redact(value, max_len: int = 120):
     """Texte court où toute adresse IP ou MAC est remplacée par « [adresse] »."""
     if value is None:
         return None
-    s = _MAC.sub("[adresse]", _IPV4.sub("[adresse]", str(value))).strip()[:max_len]
+    s = _sub_ipv6(_MAC.sub("[adresse]", _IPV4.sub("[adresse]", str(value)))).strip()[:max_len]
     return s or None

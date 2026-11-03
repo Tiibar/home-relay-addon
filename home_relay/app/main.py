@@ -19,7 +19,7 @@ import homeassistant
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -121,7 +121,8 @@ def main():
                      ", Home Assistant" if payload.get("ha") else "")
             for k, v in failed.items():
                 if v.startswith("désactivée"):
-                    log.info("Source %s %s", k, v)
+                    detail = f" ({client.threats_reason})" if k == "unifi_threats" and client.threats_reason else ""
+                    log.info("Source %s %s%s", k, v, detail)
                 else:
                     log.warning("Source %s : %s", k, v)
             dropped = queue.push(payload)
