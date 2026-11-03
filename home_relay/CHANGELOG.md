@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5
+
+- Journal à l'heure locale (fuseau de Home Assistant, Europe/Brussels par
+  défaut) au lieu de l'UTC.
+- Plan du réseau : numéro du port du switch pour les équipements reliés par
+  câble ; fabricant de la carte réseau des clients (pour reconnaître les
+  objets connectés).
+
 ## 1.0.4
 
 - Menaces IPS sur UniFi Network 9/10 : **une** requête de recherche POST,

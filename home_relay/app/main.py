@@ -14,12 +14,14 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import homeassistant
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -100,15 +102,54 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
     }
 
 
+def local_timezone(env=None, s6_dir: str = homeassistant.S6_ENV_DIR, default: str = "Europe/Brussels") -> str:
+    """Fuseau de Home Assistant : TZ (environnement, sinon fichiers s6, où le
+    Supervisor le place), sinon Europe/Brussels."""
+    env = os.environ if env is None else env
+    if env.get("TZ"):
+        return env["TZ"].strip()
+    try:
+        with open(os.path.join(s6_dir, "TZ"), encoding="utf-8") as f:
+            tz = f.read().strip()
+        if tz:
+            return tz
+    except OSError:
+        pass
+    return default
+
+
+class LocalFormatter(logging.Formatter):
+    """Horodatage du journal à l'heure locale (et non en UTC)."""
+
+    def __init__(self, tz_name: str):
+        super().__init__("%(asctime)s %(levelname)s %(message)s")
+        try:
+            self.tz = ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            self.tz = ZoneInfo("Europe/Brussels")
+
+    def formatTime(self, record, datefmt=None):
+        return datetime.fromtimestamp(record.created, self.tz).strftime(datefmt or "%Y-%m-%d %H:%M:%S")
+
+
+def setup_logging(tz_name: str) -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(LocalFormatter(tz_name))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(logging.INFO)
+
+
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    tz_name = local_timezone()
+    setup_logging(tz_name)
     opts = load_options()
     interval = max(1, int(opts.get("interval_minutes") or 5)) * 60
     client = unifi.UnifiClient(opts["unifi_url"], opts["unifi_username"], opts["unifi_password"],
                                opts.get("unifi_site") or "default", bool(opts.get("unifi_verify_ssl")))
     queue = Queue(QUEUE)
     send = make_sender(opts["supabase_function_url"], opts["shared_secret"])
-    log.info("Home Relay %s démarré : lecture seule, envoi toutes les %d min.", VERSION, interval // 60)
+    log.info("Home Relay %s démarré : lecture seule, envoi toutes les %d min (heure : %s).", VERSION, interval // 60, tz_name)
 
     while True:
         started = time.monotonic()

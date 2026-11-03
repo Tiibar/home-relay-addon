@@ -3,8 +3,9 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-python:3.13-alpine3.23
 FROM ${BUILD_FROM}
 
-# Python est déjà dans l'image de base ; aucune dépendance externe
-# (bibliothèque standard uniquement).
+# Python est déjà dans l'image de base ; aucune dépendance Python externe
+# (bibliothèque standard uniquement). tzdata : heure locale du journal.
+RUN apk add --no-cache tzdata
 COPY app/ /app/
 WORKDIR /app
 CMD [ "python3", "-u", "/app/main.py" ]

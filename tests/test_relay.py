@@ -93,7 +93,7 @@ class UnifiMapping(unittest.TestCase):
         self.assertEqual(kinds, ["gateway", "switch", "ap", "ap"])
         cuisine = out[2]
         self.assertEqual(cuisine["radios"][0], {"band": "5g", "channel": 36, "utilization_pct": 21.0, "satisfaction": 95, "clients": 4})
-        self.assertEqual(cuisine["uplink"], {"type": "wireless", "parent": "Borne B", "signal_dbm": -61, "rate_mbps": 866.0})
+        self.assertEqual(cuisine["uplink"], {"type": "wireless", "parent": "Borne B", "signal_dbm": -61, "rate_mbps": 866.0, "port": None})
         self.assertEqual(out[1]["uplink"]["parent"], "Passerelle")
         self.assertEqual(out[3]["state"], "offline")
 
@@ -448,3 +448,29 @@ class Threats(unittest.TestCase):
         self.assertEqual(p["sources"]["home_assistant"], "ok")
         self.assertEqual(p["sources"]["home_assistant_registry"], "erreur : test")
         self.assertEqual(p["unifi"]["threats"], [])
+
+
+class LocalTime(unittest.TestCase):
+    def test_timezone_sources(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(main.local_timezone({"TZ": "Europe/Paris"}, d), "Europe/Paris")
+            self.assertEqual(main.local_timezone({}, d), "Europe/Brussels")
+            with open(os.path.join(d, "TZ"), "w") as f:
+                f.write("Europe/Brussels\n")
+            self.assertEqual(main.local_timezone({}, d), "Europe/Brussels")
+
+    def test_log_time_is_local(self):
+        import logging as lg
+        rec = lg.LogRecord("x", lg.INFO, __file__, 1, "m", None, None)
+        rec.created = 1762171200.0                      # 2025-11-03 12:00 UTC
+        self.assertEqual(main.LocalFormatter("Europe/Brussels").formatTime(rec), "2025-11-03 13:00:00")
+        self.assertEqual(main.LocalFormatter("Pas/UnFuseau").formatTime(rec), "2025-11-03 13:00:00")
+
+
+class UplinkPortAndVendor(unittest.TestCase):
+    def test_port_and_vendor(self):
+        devs = [dict(DEVICES[1], uplink={"type": "wire", "uplink_mac": "aa:00:00:00:00:01", "speed": 1000, "uplink_remote_port": 4})]
+        self.assertEqual(unifi.map_devices(devs, SECRET)[0]["uplink"]["port"], 4)
+        self.assertIsNone(unifi.map_devices(DEVICES, SECRET)[2]["uplink"]["port"])        # sans fil
+        c = unifi.map_clients([dict(CLIENTS_NOW[0], oui="Espressif Inc.")], [], [], DEVICES, SECRET)[0]
+        self.assertEqual(c["vendor"], "Espressif Inc.")

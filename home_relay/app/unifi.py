@@ -355,6 +355,8 @@ def map_devices(devices, secret: str):
                 "signal_dbm": _signal(up.get("signal")) if wireless else None,
                 # sans fil : tx_rate en kb/s ; câble : speed en Mb/s
                 "rate_mbps": _num(rate / 1000, 0, 100000) if wireless and isinstance(rate, (int, float)) else _num(up.get("speed"), 0, 100000),
+                # numéro du port du switch parent (liaison par câble)
+                "port": None if wireless else _int(up.get("uplink_remote_port") or up.get("port_idx"), 0, 128),
             }
         out.append({
             "id": hashed_id(d["mac"], secret),
@@ -420,6 +422,7 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
         out.append({
             "id": cid,
             "name": _client_name(c),
+            "vendor": clean_text(c.get("oui"), 60),
             "wired": wired,
             "network": _network_name(c, networks_by_id),
             "uplink": uplink,
@@ -443,6 +446,7 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
         out.append({
             "id": cid,
             "name": _client_name(c),
+            "vendor": clean_text(c.get("oui"), 60),
             "wired": bool(c.get("is_wired")) if c.get("is_wired") is not None else None,
             "network": _network_name(c, networks_by_id),
             "uplink": last_uplink,
