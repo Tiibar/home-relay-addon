@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.9
+
+- Menaces : **source** et **cible** distinguées (nom de l'appareil de la
+  maison à l'origine, nom de l'appareil visé). Le paramètre « CLIENT » de
+  UniFi est en général la cible : il n'est plus pris pour la source. La
+  relecture des 30 jours au démarrage complète les menaces déjà envoyées.
+
 ## 1.0.8
 
 - Menaces IPS : relecture des **30 derniers jours** au démarrage puis une

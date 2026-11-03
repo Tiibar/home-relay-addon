@@ -21,7 +21,7 @@ import homeassistant
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.8"
+VERSION = "1.0.9"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -82,10 +82,7 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
             "devices": unifi.map_devices(devices, secret),
             "clients": unifi.map_clients(raw.get("unifi_clients"), raw.get("unifi_clients_24h"),
                                          raw.get("unifi_networks"), devices, secret)[:1000],
-            "threats": unifi.map_threats(raw.get("unifi_threats"), secret, {
-                str(c.get("ip")): unifi.clean_text(c.get("name") or c.get("hostname"))
-                for c in raw.get("unifi_clients") or [] if c.get("ip")
-            }),
+            "threats": unifi.map_threats(raw.get("unifi_threats"), secret, *unifi.client_lookup(raw.get("unifi_clients"))),
             "client_events": unifi.map_client_events(raw.get("unifi_client_events"), secret),
             "wan_events": unifi.map_wan_events(raw.get("unifi_wan_events"), secret),
             "wan": wan,

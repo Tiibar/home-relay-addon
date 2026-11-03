@@ -28,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from privacy import clean_text, hashed_id, redact
+from privacy import clean_text, hashed_id, normalize_mac, redact
 
 TIMEOUT = 20
 
@@ -570,22 +570,65 @@ def _param(t, *names):
     return None, None
 
 
-def threat_origin(t, ip_names: dict | None = None):
-    """« interne » si la source est sur un réseau de la maison (avec le nom de
-    l'appareil s'il est connu), sinon « internet ». L'adresse n'est jamais
-    envoyée : elle sert seulement à classer ici."""
+def client_lookup(clients):
+    """Tables locales adresse IP → nom et MAC → adresse IP des clients connectés
+    (pour nommer la source et la cible d'une menace ; jamais envoyées)."""
+    ip_names, mac_ips = {}, {}
+    for c in clients or []:
+        ip = c.get("ip")
+        if not ip:
+            continue
+        ip_names[str(ip)] = clean_text(c.get("name")) or clean_text(c.get("display_name")) or clean_text(c.get("hostname"))
+        try:
+            mac_ips[normalize_mac(str(c.get("mac") or ""))] = str(ip)
+        except ValueError:
+            pass
+    return ip_names, mac_ips
+
+
+def threat_parties(t, ip_names: dict | None = None, mac_ips: dict | None = None):
+    """(origine, nom de la source, nom de la cible) d'une menace.
+
+    Origine : « interne » si la source est sur un réseau de la maison (ou est
+    un appareil connu), sinon « internet ». Le paramètre CLIENT de UniFi est
+    en général la **cible** (« {SRC_IP} tried to reach {CLIENT} ») ; il n'est
+    pris pour la source que s'il a l'adresse de la source, ou pour une menace
+    sortante. Les adresses ne servent qu'à classer ici : jamais envoyées."""
+    ip_names, mac_ips = ip_names or {}, mac_ips or {}
     src, src_name = _param(t, "SRC_IP", "SOURCE_IP", "SRC", "SOURCE")
     src = src or t.get("src_ip") or t.get("source_ip")
+    dst, dst_name = _param(t, "DST_IP", "DEST_IP", "DESTINATION_IP", "DST", "DESTINATION")
+    dst = dst or t.get("dst_ip") or t.get("dest_ip")
     cl_id, cl_name = _param(t, "CLIENT")
-    if src and (_PRIVATE.match(str(src)) or str(src) in (ip_names or {})):   # réseau privé ou appareil connu
-        name = clean_text(cl_name) or clean_text(src_name) or (ip_names or {}).get(str(src))
-        return "interne", name
-    if src:
-        return "internet", None
-    return None, None
+    cl_ip = None
+    if cl_id:
+        try:
+            cl_ip = mac_ips.get(normalize_mac(str(cl_id)))
+        except ValueError:
+            cl_ip = str(cl_id)
+
+    def name_of(ip, given):
+        return clean_text(given) or (ip_names.get(str(ip)) if ip else None)
+
+    source, target = name_of(src, src_name), name_of(dst, dst_name)
+    cl_label = clean_text(cl_name) or (ip_names.get(cl_ip) if cl_ip else None)
+    if cl_label:
+        if (cl_ip and src and cl_ip == str(src)) or (not src and _direction(t) == "sortant"):
+            source = source or cl_label
+            src = src or cl_ip
+        else:
+            target = target or cl_label
+    internal = bool(src) and bool(_PRIVATE.match(str(src)) or str(src) in ip_names)
+    origin = "interne" if internal else "internet" if src else None
+    return origin, (source if internal else None), target
 
 
-def map_threats(rows, secret: str, ip_names: dict | None = None):
+def threat_origin(t, ip_names: dict | None = None, mac_ips: dict | None = None):
+    """(origine, nom de l'appareil de la maison à l'origine) — voir threat_parties."""
+    return threat_parties(t, ip_names, mac_ips)[:2]
+
+
+def map_threats(rows, secret: str, ip_names: dict | None = None, mac_ips: dict | None = None):
     """Titre, gravité, catégorie, date, direction, bloqué ou non, origine
     (Internet / appareil de la maison). Toute adresse IP ou MAC est remplacée
     par « [adresse] » avant l'envoi."""
@@ -612,8 +655,7 @@ def map_threats(rows, secret: str, ip_names: dict | None = None):
                       or ("blocked" if blocked else "detected" if blocked is False else None),
             "direction": _direction(t),
             "blocked": blocked,
-            "origin": threat_origin(t, ip_names)[0],
-            "device_name": threat_origin(t, ip_names)[1],
+            **dict(zip(("origin", "device_name", "target_name"), threat_parties(t, ip_names, mac_ips))),
         })
     return out[:500]
 

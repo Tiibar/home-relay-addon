@@ -500,6 +500,24 @@ class SystemLogCategories(unittest.TestCase):
         self.assertEqual((t_ext["origin"], t_ext["device_name"]), ("internet", None))
         self.assertIsNone(IP.search(json.dumps([t_int, t_ext])))
 
+    def test_threat_source_and_target(self):
+        """Apple TV → iPhone : source = Apple TV (adresse connue), cible = le CLIENT (iPhone)."""
+        ip_names, mac_ips = unifi.client_lookup([
+            {"ip": "198.51.100.30", "mac": "aa:00:00:00:00:51", "name": "Apple TV"},
+            {"ip": "198.51.100.31", "mac": "aa:00:00:00:00:52", "name": "iPhone de Léa"},
+        ])
+        t = {**THREAT, "title_raw": "Threat Detected", "parameters": {
+            "SRC_IP": {"id": "198.51.100.30"}, "CLIENT": {"id": "aa:00:00:00:00:52", "name": "iPhone de Léa"}}}
+        m = unifi.map_threats([t], SECRET, ip_names, mac_ips)[0]
+        self.assertEqual((m["origin"], m["device_name"], m["target_name"]), ("interne", "Apple TV", "iPhone de Léa"))
+        ext = unifi.map_threats([THREAT], SECRET, ip_names, mac_ips)[0]
+        self.assertEqual((ext["origin"], ext["device_name"], ext["target_name"]), ("internet", None, "TV salon"))
+        out = {**THREAT, "key": "THREAT_DETECTED_OUTBOUND", "parameters": {"CLIENT": {"id": "aa:00:00:00:00:51", "name": "Apple TV"},
+                                                                           "DST_IP": {"id": "203.0.113.7"}}}
+        o = unifi.map_threats([out], SECRET, ip_names, mac_ips)[0]
+        self.assertEqual((o["origin"], o["device_name"], o["target_name"]), ("interne", "Apple TV", None))
+        self.assertIsNone(IP.search(json.dumps([m, ext, o])))
+
     def test_client_events_mapping_without_ssid_or_address(self):
         rows = [
             {"id": "1", "timestamp": 1762171000000, "key": "CLIENT_ROAMED", "category": "CLIENT_DEVICES",
