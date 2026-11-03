@@ -327,6 +327,16 @@ KIND = {"ugw": "gateway", "udm": "gateway", "uxg": "gateway", "usw": "switch", "
 BAND = {"ng": "2.4g", "na": "5g", "6e": "6g"}
 
 
+def channel_width(device, radio):
+    """Largeur du canal d'une radio : champ `ht` de radio_table (« 80 », « VHT80 », « HE160 »…)."""
+    for rt in device.get("radio_table") or []:
+        if rt.get("radio") == radio:
+            m = re.search(r"(\d{2,3})", str(rt.get("ht") or ""))
+            if m and int(m.group(1)) in (20, 40, 80, 160, 320):
+                return int(m.group(1))
+    return None
+
+
 def device_names(devices) -> dict:
     """MAC (minuscules) -> nom, pour nommer les bornes et switchs (reste en local)."""
     out = {}
@@ -376,6 +386,8 @@ def map_devices(devices, secret: str):
                     "utilization_pct": _num(r.get("cu_total"), 0, 100),
                     "satisfaction": _int(r.get("satisfaction"), -1, 100),
                     "clients": _int(r.get("num_sta"), 0),
+                    # largeur du canal (MHz), lue dans la configuration radio de la borne
+                    "width_mhz": channel_width(d, r.get("radio")),
                 }
                 for r in (d.get("radio_table_stats") or [])[:8]
             ],

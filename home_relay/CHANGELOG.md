@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.7
+
+- Bornes Wi-Fi : largeur du canal de chaque radio (20/40/80/160 MHz), pour
+  repérer les chevauchements de canaux entre bornes.
+
 ## 1.0.6
 
 - Chauffage : pour chaque thermostat (Tado via HomeKit), consigne,

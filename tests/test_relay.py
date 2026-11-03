@@ -34,6 +34,7 @@ DEVICES = [
      "uplink": {"type": "wire", "uplink_mac": "aa:00:00:00:00:01", "speed": 1000}},
     {"mac": "aa:00:00:00:00:03", "type": "uap", "model": "U6 Mesh", "name": "Borne A", "state": 1,
      "version": "6.6.77.15516", "upgradable": True, "uptime": 7200, "num_sta": 5, "satisfaction": 93,
+     "radio_table": [{"radio": "na", "ht": "VHT80"}, {"radio": "ng", "ht": "bogus"}],
      "radio_table_stats": [{"radio": "na", "channel": 36, "cu_total": 21, "satisfaction": 95, "num_sta": 4},
                            {"radio": "ng", "channel": 6, "cu_total": 48, "satisfaction": 88, "num_sta": 1}],
      "uplink": {"type": "wireless", "uplink_mac": "aa:00:00:00:00:04", "signal": -61, "tx_rate": 866000}},
@@ -92,7 +93,8 @@ class UnifiMapping(unittest.TestCase):
         kinds = [d["kind"] for d in out]
         self.assertEqual(kinds, ["gateway", "switch", "ap", "ap"])
         cuisine = out[2]
-        self.assertEqual(cuisine["radios"][0], {"band": "5g", "channel": 36, "utilization_pct": 21.0, "satisfaction": 95, "clients": 4})
+        self.assertEqual(cuisine["radios"][0], {"band": "5g", "channel": 36, "utilization_pct": 21.0, "satisfaction": 95, "clients": 4, "width_mhz": 80})
+        self.assertIsNone(cuisine["radios"][1]["width_mhz"])
         self.assertEqual(cuisine["uplink"], {"type": "wireless", "parent": "Borne B", "signal_dbm": -61, "rate_mbps": 866.0, "port": None})
         self.assertEqual(out[1]["uplink"]["parent"], "Passerelle")
         self.assertEqual(out[3]["state"], "offline")
