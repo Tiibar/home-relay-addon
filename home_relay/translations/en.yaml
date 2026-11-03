@@ -30,4 +30,4 @@ configuration:
     description: Entity ID for the outdoor temperature (weather.* or a temperature sensor). Empty = the first weather.* entity.
   alarm_entities:
     name: Alarm entities (optional)
-    description: Entity IDs whose state is read (read only). Empty = all enabled alarm_control_panel.* entities.
+    description: Entity IDs whose state is read (read only). Empty = all enabled alarm_control_panel.* entities, otherwise the remaining Somfy entities (state only).

@@ -454,6 +454,119 @@ class Threats(unittest.TestCase):
         self.assertEqual(p["unifi"]["threats"], [])
 
 
+class SystemLogCategories(unittest.TestCase):
+    """Extension autorisée : même recherche, catégories CLIENT_DEVICES et INTERNET_AND_WAN."""
+
+    def test_only_three_categories_allowed(self):
+        self.assertEqual(unifi.SYSTEM_LOG_CATEGORIES, {"SECURITY", "CLIENT_DEVICES", "INTERNET_AND_WAN"})
+        c = FakeClient({})
+        path = unifi.SYSTEM_LOG_PATH.format(site="default")
+        for cats in (["ADMIN_ACTIVITY"], ["SECURITY", "SYSTEM"], "SECURITY", [{"x": 1}]):
+            with self.assertRaises(unifi.ForbiddenRequest, msg=str(cats)):
+                c._request("POST", path, body={"timestampFrom": 0, "timestampTo": 1, "categories": cats})
+        self.assertEqual(c.calls, [])
+
+    def test_threats_backfill_30_days_then_incremental_then_daily(self):
+        c = FakeClient({("POST", SYSLOG): {"data": [], "total_element_count": 0}})
+        c.threats()
+        b = c.calls[-1][2]
+        self.assertAlmostEqual((b["timestampTo"] - b["timestampFrom"]) / 86400_000, 30, places=2)
+        until = b["timestampTo"]
+        c.threats()
+        self.assertEqual(c.calls[-1][2]["timestampFrom"], until)
+        c.threats_backfill_ms -= 86401                     # un jour plus tard : relecture des 30 jours
+        c.threats()
+        b = c.calls[-1][2]
+        self.assertAlmostEqual((b["timestampTo"] - b["timestampFrom"]) / 86400_000, 30, places=2)
+
+    def test_log_events_backfill_and_batches(self):
+        rows = [{"id": f"e{i}", "timestamp": 1762171000000 + i, "category": "CLIENT_DEVICES", "key": "CLIENT_ROAMED"}
+                for i in range(100)]
+        c = FakeClient({("POST", SYSLOG): lambda b: {"data": rows if b["pageNumber"] < 20 else [], "total_element_count": 2000}})
+        out = c.log_events("CLIENT_DEVICES", 7)
+        b = next(call[2] for call in c.calls if call[2] and "categories" in call[2])
+        self.assertEqual(b["categories"], ["CLIENT_DEVICES"])
+        self.assertAlmostEqual((b["timestampTo"] - b["timestampFrom"]) / 86400_000, 7, places=2)
+        self.assertEqual(len(out), unifi.EVENTS_PER_SEND)
+        self.assertEqual(len(c.pending_events["CLIENT_DEVICES"]), 2000 - unifi.EVENTS_PER_SEND)
+        c.answers = {("POST", SYSLOG): {"data": [], "total_element_count": 0}}
+        self.assertEqual(len(c.log_events("CLIENT_DEVICES", 7)), 2000 - unifi.EVENTS_PER_SEND)
+
+    def test_threat_origin_internal_or_internet(self):
+        internal = {**THREAT, "parameters": {"SRC_IP": {"id": "198.51.100.20"}, "SIGNATURE": {"name": "ET POLICY"}}}
+        t_int = unifi.map_threats([internal], SECRET, {"198.51.100.20": "Caméra jardin"})[0]
+        self.assertEqual((t_int["origin"], t_int["device_name"]), ("interne", "Caméra jardin"))
+        t_ext = unifi.map_threats([THREAT], SECRET)[0]
+        self.assertEqual((t_ext["origin"], t_ext["device_name"]), ("internet", None))
+        self.assertIsNone(IP.search(json.dumps([t_int, t_ext])))
+
+    def test_client_events_mapping_without_ssid_or_address(self):
+        rows = [
+            {"id": "1", "timestamp": 1762171000000, "key": "CLIENT_ROAMED", "category": "CLIENT_DEVICES",
+             "parameters": {"CLIENT": {"id": "aa:00:00:00:00:31", "name": "iPhone"}, "DEVICE_FROM": {"id": "x", "name": "Borne salon"},
+                            "DEVICE_TO": {"id": "y", "name": "Borne bureau"}, "SSID": {"name": "MaisonWifi"}}},
+            {"id": "2", "timestamp": 1762171060000, "key": "CLIENT_DISCONNECTED_WIRELESS",
+             "parameters": {"CLIENT": {"id": "aa:00:00:00:00:31", "name": "iPhone"}, "DEVICE": {"name": "Borne bureau"},
+                            "DURATION": {"name": "1h 2m 3s"}}},
+            {"id": "3", "timestamp": 1762171120000, "key": "CLIENT_CONNECTED_WIRELESS",
+             "parameters": {"CLIENT": {"id": "aa:00:00:00:00:31", "name": "iPhone"}, "DEVICE": {"name": "Borne salon"}}},
+            {"id": "4", "timestamp": 1762171120000, "key": "SOMETHING_ELSE"},
+        ]
+        out = unifi.map_client_events(rows, SECRET)
+        self.assertEqual([e["kind"] for e in out], ["roaming", "deconnexion", "connexion"])
+        self.assertEqual((out[0]["ap_from"], out[0]["ap_to"]), ("Borne salon", "Borne bureau"))
+        self.assertEqual(out[1]["duration_s"], 3723)
+        self.assertEqual(out[0]["client_id"], hashed_id("aa:00:00:00:00:31", SECRET))
+        text = json.dumps(out)
+        self.assertNotIn("MaisonWifi", text)
+        self.assertIsNone(MAC.search(text))
+
+    def test_wan_events_mapping(self):
+        out = unifi.map_wan_events([
+            {"id": "a", "timestamp": 1762171000000, "key": "WAN_HIGH_LATENCY", "title_raw": "High Latency Detected"},
+            {"id": "b", "timestamp": 1762171000000, "key": "WAN_PACKET_LOSS", "title_raw": "Packet loss on 203.0.113.1"},
+        ], SECRET)
+        self.assertEqual([e["kind"] for e in out], ["latence_elevee", "perte_paquets"])
+        self.assertIsNone(IP.search(json.dumps(out)))
+
+
+class AlarmReadOnly(unittest.TestCase):
+    """Panneau d'alarme désactivé volontairement : entités Somfy restantes, sinon « non suivi »."""
+
+    def test_somfy_entities_when_panel_disabled(self):
+        states = [
+            {"entity_id": "select.somfy_security_level", "state": "disarmed", "attributes": {"friendly_name": "Niveau de sécurité"}},
+            {"entity_id": "binary_sensor.porte_entree", "state": "off", "attributes": {"friendly_name": "Porte d'entrée", "device_class": "door"}},
+            {"entity_id": "sensor.porte_entree_signal", "state": "80", "attributes": {"friendly_name": "Signal"}},
+            {"entity_id": "binary_sensor.cuisine_motion", "state": "off", "attributes": {"device_class": "motion"}},
+        ]
+        registry = {
+            "devices": [{"id": "d1", "manufacturer": "Somfy", "name": "Somfy Protect"},
+                        {"id": "d2", "manufacturer": "Somfy", "name": "Porte d'entrée"},
+                        {"id": "d3", "manufacturer": "Philips", "name": "Cuisine"}],
+            "entities": [{"entity_id": "select.somfy_security_level", "device_id": "d1", "platform": "mqtt"},
+                         {"entity_id": "binary_sensor.porte_entree", "device_id": "d2", "platform": "mqtt"},
+                         {"entity_id": "sensor.porte_entree_signal", "device_id": "d2", "platform": "mqtt"},
+                         {"entity_id": "binary_sensor.cuisine_motion", "device_id": "d3", "platform": "hue"}],
+            "areas": [],
+        }
+        out = homeassistant.map_states({}, states, registry=registry)
+        self.assertEqual(out["alarm_tracking"], "suivi")
+        self.assertEqual(sorted(a["name"] for a in out["alarm"]), ["Niveau de sécurité", "Porte d'entrée"])
+
+    def test_not_tracked_is_reported_as_deliberate(self):
+        out = homeassistant.map_states({}, [{"entity_id": "light.salon", "state": "on", "attributes": {}}])
+        self.assertEqual((out["alarm"], out["alarm_tracking"]), ([], "non_suivi"))
+        c = FakeClient({})
+        orig = homeassistant.read
+        homeassistant.read = lambda: {"config": {}, "states": [], "registry": None, "registry_error": "test"}
+        try:
+            p = main.collect({"shared_secret": SECRET}, c)
+        finally:
+            homeassistant.read = orig
+        self.assertEqual(p["sources"]["alarme"], "désactivée : état non suivi volontairement (lecture seule)")
+
+
 class LocalTime(unittest.TestCase):
     def test_timezone_sources(self):
         with tempfile.TemporaryDirectory() as d:

@@ -13,6 +13,7 @@ d'écriture.
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -130,6 +131,44 @@ class Registry:
 def _is_hue(dev: dict | None, reg: dict) -> bool:
     maker = str((dev or {}).get("manufacturer") or "").lower()
     return reg.get("platform") == "hue" or "signify" in maker or "philips" in maker
+
+
+SOMFY = re.compile(r"somfy", re.I)
+ALARM_STATE_HINT = re.compile(r"securit|alarm|state|[ée]tat|mode|level|niveau|status", re.I)
+ALARM_DETECTOR_CLASSES = {"door", "window", "opening", "motion", "occupancy", "tamper", "smoke", "safety", "presence"}
+
+
+def alarm_entities_for(by_id: dict, reg_index: "Registry", chosen=None) -> list:
+    """Entités dont on lit l'état de l'alarme (lecture seule, jamais commandées) :
+    1. celles choisies dans la configuration ;
+    2. sinon les alarm_control_panel.* actives ;
+    3. sinon, si le panneau a été désactivé volontairement, les entités qui
+       restent de l'appareil Somfy (SomfyProtect2MQTT, en MQTT) : état ou
+       niveau de sécurité (sensor / select / binary_sensor) et détecteurs.
+    Liste vide = état non suivi (choix volontaire, pas une panne)."""
+    if chosen:
+        return list(chosen)
+    panels = sorted(e for e in by_id if e.startswith("alarm_control_panel."))
+    if panels:
+        return panels
+    found = []
+    for eid, s in by_id.items():
+        domain = eid.split(".", 1)[0]
+        if domain not in ("sensor", "binary_sensor", "select"):
+            continue
+        reg, dev = reg_index.device_of(eid)
+        if reg.get("disabled_by") or (dev or {}).get("disabled_by"):
+            continue
+        dev = dev or {}
+        origin = " ".join(str(x or "") for x in (eid, dev.get("manufacturer"), dev.get("model"), dev.get("name"),
+                                                  reg.get("platform"), _name(s)))
+        if not SOMFY.search(origin):
+            continue
+        label = f"{eid} {_name(s) or ''}"
+        dclass = str((s.get("attributes") or {}).get("device_class") or "")
+        if ALARM_STATE_HINT.search(label) or (domain == "binary_sensor" and dclass in ALARM_DETECTOR_CLASSES):
+            found.append(eid)
+    return sorted(found)
 
 
 def map_states(config: dict, states: list, climate_entities=None, alarm_entities=None, registry=None, weather_entity=None):
@@ -285,13 +324,14 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
                 "target": None, "hvac_mode": None, "hvac_action": None,
             })
 
-    # Alarme (lecture seule) : entités choisies, sinon les alarm_control_panel.* actives
-    alarm = []
-    ids = alarm_entities or sorted(e for e in by_id if e.startswith("alarm_control_panel."))
-    for eid in ids:
+    # Alarme (lecture seule) : voir alarm_entities()
+    alarm, alarm_tracking = [], "non_suivi"
+    for eid in alarm_entities_for(by_id, reg_index, alarm_entities):
         s = by_id.get(eid)
         if s:
             alarm.append({"name": _name(s) or eid, "state": clean_text(s.get("state"), 60)})
+    if alarm:
+        alarm_tracking = "suivi"
 
     def battery_order(b):
         lvl = b["level"] if b["level"] is not None else (0 if b["low"] else 101)
@@ -305,4 +345,5 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
         "unavailable": unavailable_entities[:1000],
         "climate": climate[:100],
         "alarm": alarm[:200],
+        "alarm_tracking": alarm_tracking,
     }

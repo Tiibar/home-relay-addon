@@ -21,7 +21,7 @@ import homeassistant
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -70,6 +70,8 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
     if raw.get("unifi_threats") is not None:
         raw["unifi_threats"], endpoint = raw["unifi_threats"]
         sources["unifi_threats"] = f"ok ({endpoint})"
+    read("unifi_client_events", lambda: client.log_events("CLIENT_DEVICES", unifi.CLIENT_EVENTS_BACKFILL_DAYS))
+    read("unifi_wan_events", lambda: client.log_events("INTERNET_AND_WAN", unifi.WAN_EVENTS_BACKFILL_DAYS))
     read("home_assistant", homeassistant.read)
 
     devices = raw.get("unifi_devices") or []
@@ -80,7 +82,12 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
             "devices": unifi.map_devices(devices, secret),
             "clients": unifi.map_clients(raw.get("unifi_clients"), raw.get("unifi_clients_24h"),
                                          raw.get("unifi_networks"), devices, secret)[:1000],
-            "threats": unifi.map_threats(raw.get("unifi_threats"), secret),
+            "threats": unifi.map_threats(raw.get("unifi_threats"), secret, {
+                str(c.get("ip")): unifi.clean_text(c.get("name") or c.get("hostname"))
+                for c in raw.get("unifi_clients") or [] if c.get("ip")
+            }),
+            "client_events": unifi.map_client_events(raw.get("unifi_client_events"), secret),
+            "wan_events": unifi.map_wan_events(raw.get("unifi_wan_events"), secret),
             "wan": wan,
             "speedtest": speedtest,
         }
@@ -91,6 +98,8 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
         sources["home_assistant_registry"] = "ok" if h["registry"] else f"erreur : {h['registry_error']}"
         ha_part = homeassistant.map_states(h["config"], h["states"], opts.get("climate_entities"),
                                            opts.get("alarm_entities"), h["registry"], opts.get("weather_entity") or None)
+        if ha_part.get("alarm_tracking") == "non_suivi":
+            sources["alarme"] = "désactivée : état non suivi volontairement (lecture seule)"
 
     return {
         "v": 1,

@@ -5,9 +5,11 @@ BLANCHE stricte (`ALLOWED_NON_GET`, vérifiée dans `_request`) qui n'en
 autorise que deux, aucune ne modifiant rien :
   * POST /api/auth/login : ouverture de la session ;
   * POST /proxy/network/v2/api/site/<site>/system-log/all : RECHERCHE dans le
-    journal (catégorie SECURITY, menaces IPS), la requête qu'utilise
-    l'interface de UniFi Network 10 ; le corps ne peut contenir que les champs
-    de recherche (`SYSTEM_LOG_FIELDS`).
+    journal, la requête qu'utilise l'interface de UniFi Network 10 ; le corps
+    ne peut contenir que les champs de recherche (`SYSTEM_LOG_FIELDS`) et les
+    seules catégories `SYSTEM_LOG_CATEGORIES` : SECURITY (menaces IPS),
+    CLIENT_DEVICES (connexions, déconnexions, passages d'une borne à l'autre)
+    et INTERNET_AND_WAN (alertes de latence, de perte de paquets, de lien WAN).
 Garde-fou principal : le compte local « home-relay » est en View Only (lecture
 seule) : même une requête erronée ne pourrait rien modifier.
 
@@ -51,6 +53,12 @@ ALLOWED_NON_GET = {
     ("POST", SYSTEM_LOG_PATH): {"timestampFrom", "timestampTo", "pageSize", "pageNumber", "categories"},
 }
 SYSTEM_LOG_FIELDS = ALLOWED_NON_GET[("POST", SYSTEM_LOG_PATH)]
+SYSTEM_LOG_CATEGORIES = {"SECURITY", "CLIENT_DEVICES", "INTERNET_AND_WAN"}
+THREATS_BACKFILL_DAYS = 30      # au démarrage puis une fois par jour
+CLIENT_EVENTS_BACKFILL_DAYS = 7
+WAN_EVENTS_BACKFILL_DAYS = 30
+BACKFILL_MAX_PAGES = 60
+EVENTS_PER_SEND = 1500          # événements envoyés au plus par cycle (le reste attend)
 SYSTEM_LOG_PAGE = 100
 SYSTEM_LOG_MAX_PAGES = 5
 THREATS_UNAVAILABLE = "menaces non disponibles sur cette passerelle"
@@ -76,6 +84,9 @@ class UnifiClient:
         self.threats_disabled_until = 0.0
         self.threats_reason = ""
         self.threats_since_ms = 0
+        self.threats_backfill_ms = 0.0
+        self.log_since_ms: dict[str, int] = {}
+        self.pending_events: dict[str, list] = {"CLIENT_DEVICES": [], "INTERNET_AND_WAN": []}
         self.csrf = None
 
     # -- transport (liste blanche) ------------------------------------------
@@ -92,6 +103,10 @@ class UnifiClient:
             raise ForbiddenRequest(f"requête {method} refusée par la liste blanche : {path}")
         if not isinstance(body, dict) or not set(body) <= fields:
             raise ForbiddenRequest(f"corps de requête refusé pour {path}")
+        if template == SYSTEM_LOG_PATH and "categories" in body:
+            cats = body["categories"]
+            if not isinstance(cats, list) or not all(isinstance(c, str) and c in SYSTEM_LOG_CATEGORIES for c in cats):
+                raise ForbiddenRequest(f"catégorie du journal refusée : {cats}")
 
     def _request(self, method: str, path: str, params: dict | None = None, body: dict | None = None):
         """Seul point de sortie vers la passerelle : liste blanche d'abord."""
@@ -189,32 +204,55 @@ class UnifiClient:
         since = time.time() - 86400
         return [r for r in rows if _epoch(r.get("last_seen")) and _epoch(r.get("last_seen")) >= since]
 
-    def threats_from_system_log(self):
-        """Menaces de la catégorie SECURITY depuis la dernière lecture (24 h la
-        première fois), par pages de 100 (5 pages au plus)."""
-        now_ms = int(time.time() * 1000)
-        since = self.threats_since_ms or now_ms - 86400_000
-        rows, categories = [], ("SECURITY",)
-        for page in range(SYSTEM_LOG_MAX_PAGES):
+    def read_system_log(self, category: str, since_ms: int, until_ms: int, max_pages: int = SYSTEM_LOG_MAX_PAGES):
+        """Recherche dans le journal d'une catégorie autorisée, page par page.
+        Si la passerelle refuse le filtre de catégorie, on filtre ici."""
+        rows, categories = [], (category,)
+        for page in range(max_pages):
             try:
-                data = self.search_system_log(since, now_ms, page, categories)
+                data = self.search_system_log(since_ms, until_ms, page, categories)
             except UnifiError as e:
-                # certaines versions refusent le filtre de catégorie : on filtre ici
                 if page == 0 and categories and "HTTP 400" in str(e):
                     categories = ()
-                    data = self.search_system_log(since, now_ms, page, categories)
+                    data = self.search_system_log(since_ms, until_ms, page, categories)
                 else:
                     raise
-            found = threat_rows(data, "system-log")
-            if found is None:
-                raise UnifiError("format inconnu")
-            rows += found
             items = data.get("data") if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                raise UnifiError("format inconnu")
+            rows += [r for r in items if isinstance(r, dict) and (categories or str(r.get("category", "")).upper() == category)]
             total = data.get("total_element_count") if isinstance(data, dict) else None
             if not items or len(items) < SYSTEM_LOG_PAGE or (total is not None and (page + 1) * SYSTEM_LOG_PAGE >= total):
                 break
-        self.threats_since_ms = now_ms
         return rows
+
+    def threats_from_system_log(self):
+        """Menaces de la catégorie SECURITY depuis la dernière lecture ; au
+        démarrage puis une fois par jour, relecture des 30 derniers jours
+        (les doublons sont écartés par Supabase)."""
+        now_ms = int(time.time() * 1000)
+        backfill = time.time() - self.threats_backfill_ms > 86400
+        since = now_ms - THREATS_BACKFILL_DAYS * 86400_000 if backfill else (self.threats_since_ms or now_ms - 86400_000)
+        rows = self.read_system_log("SECURITY", since, now_ms, BACKFILL_MAX_PAGES if backfill else SYSTEM_LOG_MAX_PAGES)
+        rows = [r for r in rows if str(r.get("category", "")).upper() == "SECURITY"
+                or any(k in str(r.get("key", "")).upper() for k in IPS_KEY)]
+        self.threats_since_ms = now_ms
+        if backfill:
+            self.threats_backfill_ms = time.time()
+        return rows
+
+    def log_events(self, category: str, backfill_days: int):
+        """Événements d'une catégorie (Wi-Fi des appareils, Internet) depuis la
+        dernière lecture ; la première fois, les `backfill_days` derniers jours.
+        Envoyés par lots (EVENTS_PER_SEND) : le reste attend le cycle suivant."""
+        now_ms = int(time.time() * 1000)
+        first = category not in self.log_since_ms
+        since = now_ms - backfill_days * 86400_000 if first else self.log_since_ms[category]
+        rows = self.read_system_log(category, since, now_ms, BACKFILL_MAX_PAGES if first else SYSTEM_LOG_MAX_PAGES)
+        self.log_since_ms[category] = now_ms
+        pending = self.pending_events[category] + rows
+        out, self.pending_events[category] = pending[:EVENTS_PER_SEND], pending[EVENTS_PER_SEND:]
+        return out
 
     def threats(self):
         """Menaces IPS : journal système (UniFi Network 9 et 10), sinon les
@@ -508,9 +546,40 @@ def _blocked(t):
     return None
 
 
-def map_threats(rows, secret: str):
-    """Titre, gravité, catégorie, date, direction, bloqué ou non. Toute adresse
-    IP ou MAC est remplacée par « [adresse] » avant l'envoi."""
+_PRIVATE = re.compile(r"^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|f[cd][0-9a-f]{2}:)", re.I)
+
+
+def _param(t, *names):
+    """Valeur (id) et nom d'un paramètre du journal, ex. SRC_IP ou CLIENT."""
+    params = t.get("parameters") if isinstance(t.get("parameters"), dict) else {}
+    for n in names:
+        p = params.get(n)
+        if isinstance(p, dict):
+            return p.get("id"), p.get("name")
+        if p is not None:
+            return p, None
+    return None, None
+
+
+def threat_origin(t, ip_names: dict | None = None):
+    """« interne » si la source est sur un réseau de la maison (avec le nom de
+    l'appareil s'il est connu), sinon « internet ». L'adresse n'est jamais
+    envoyée : elle sert seulement à classer ici."""
+    src, src_name = _param(t, "SRC_IP", "SOURCE_IP", "SRC", "SOURCE")
+    src = src or t.get("src_ip") or t.get("source_ip")
+    cl_id, cl_name = _param(t, "CLIENT")
+    if src and (_PRIVATE.match(str(src)) or str(src) in (ip_names or {})):   # réseau privé ou appareil connu
+        name = clean_text(cl_name) or clean_text(src_name) or (ip_names or {}).get(str(src))
+        return "interne", name
+    if src:
+        return "internet", None
+    return None, None
+
+
+def map_threats(rows, secret: str, ip_names: dict | None = None):
+    """Titre, gravité, catégorie, date, direction, bloqué ou non, origine
+    (Internet / appareil de la maison). Toute adresse IP ou MAC est remplacée
+    par « [adresse] » avant l'envoi."""
     out = []
     for t in rows or []:
         key = t.get("_id") or t.get("id") or f"{t.get('timestamp') or t.get('time')}-{t.get('inner_alert_signature_id') or t.get('signature')}"
@@ -534,8 +603,69 @@ def map_threats(rows, secret: str):
                       or ("blocked" if blocked else "detected" if blocked is False else None),
             "direction": _direction(t),
             "blocked": blocked,
+            "origin": threat_origin(t, ip_names)[0],
+            "device_name": threat_origin(t, ip_names)[1],
         })
     return out[:500]
+
+
+def _duration_s(t):
+    """Durée de connexion en secondes (paramètre DURATION/UPTIME ou « 2h 3m 4s »)."""
+    val, name = _param(t, "DURATION", "UPTIME", "CONNECTED_TIME")
+    for v in (val, name):
+        if isinstance(v, (int, float)):
+            return int(v)
+        if isinstance(v, str):
+            if v.isdigit():
+                return int(v)
+            parts = re.findall(r"(\d+)\s*([hms])", v)
+            if parts:
+                return sum(int(n) * {"h": 3600, "m": 60, "s": 1}[u] for n, u in parts)
+    return None
+
+
+def map_client_events(rows, secret: str):
+    """Connexions, déconnexions et passages d'une borne à l'autre. Jamais de
+    nom de Wi-Fi ni d'adresse : identifiant de l'appareil haché, noms des bornes."""
+    out = []
+    for e in rows or []:
+        key = str(e.get("key") or e.get("event") or "").upper()
+        kind = "roaming" if "ROAM" in key else "deconnexion" if "DISCONNECT" in key else "connexion" if "CONNECT" in key else None
+        at = _iso(e.get("timestamp") or e.get("time"))
+        if not kind or not at:
+            continue
+        cid, cname = _param(e, "CLIENT")
+        try:
+            client_id = hashed_id(str(cid), secret) if cid else None
+        except ValueError:   # pas une adresse MAC : identifiant opaque quand même
+            client_id = hashed_id(str(cid), secret, is_mac=False)
+        _, ap_from = _param(e, "DEVICE_FROM", "AP_FROM")
+        _, ap_to = _param(e, "DEVICE_TO", "AP_TO", "DEVICE", "AP")
+        out.append({
+            "id": hashed_id(str(e.get("id") or e.get("_id") or f"{at}-{key}-{cid}"), secret, is_mac=False),
+            "at": at, "kind": kind, "client_id": client_id, "client_name": clean_text(cname),
+            "ap_from": clean_text(ap_from), "ap_to": clean_text(ap_to), "duration_s": _duration_s(e),
+        })
+    return out
+
+
+def map_wan_events(rows, secret: str):
+    """Alertes Internet : latence élevée, perte de paquets, lien WAN."""
+    out = []
+    for e in rows or []:
+        key = str(e.get("key") or e.get("event") or "").upper()
+        title = redact(e.get("title_raw") or e.get("title") or _render(e.get("message_raw"), e.get("parameters")) or e.get("message"), 160)
+        at = _iso(e.get("timestamp") or e.get("time"))
+        if not at:
+            continue
+        text = f"{key} {title or ''}".upper()
+        kind = "latence_elevee" if "LATENCY" in text else "perte_paquets" if "LOSS" in text else \
+            "lien_wan" if any(w in text for w in ("WAN", "FAILOVER", "OFFLINE", "DISCONNECTED")) else "autre"
+        out.append({
+            "id": hashed_id(str(e.get("id") or e.get("_id") or f"{at}-{key}"), secret, is_mac=False),
+            "at": at, "kind": kind, "title": title,
+        })
+    return out
 
 
 def map_wan(health_rows, devices):

@@ -18,7 +18,7 @@ Assistant.
 | `shared_secret` | Secret partagé (40 caractères), identique au secret `RELAY_SHARED_SECRET` de Supabase. |
 | `interval_minutes` | Intervalle entre deux envois (5 par défaut). |
 | `climate_entities` | Facultatif. Entités lues pour la température et l'humidité. Vide = toutes les `climate.*`. |
-| `alarm_entities` | Facultatif. Entités dont l'**état** est lu (lecture seule). Vide = les `alarm_control_panel.*` activées. |
+| `alarm_entities` | Facultatif. Entités dont l'**état** est lu (lecture seule). Vide = les `alarm_control_panel.*` activées, sinon les entités Somfy restantes (voir plus bas). |
 
 Aucune valeur n'est écrite dans ce dépôt public : tout passe par cette
 configuration, stockée par Home Assistant.
@@ -51,9 +51,13 @@ Le client HTTP du module refuse toute requête non-GET qui n'est pas dans une
 1. `POST /api/auth/login` : ouvre la session ;
 2. `POST /proxy/network/v2/api/site/<site>/system-log/all` : **recherche**
    dans le journal système, avec uniquement les champs `timestampFrom`,
-   `timestampTo`, `pageSize`, `pageNumber`, `categories` (`["SECURITY"]`).
-   C'est la requête qu'utilise l'interface de UniFi Network 10 pour afficher
-   les menaces : elle lit, elle ne modifie rien.
+   `timestampTo`, `pageSize`, `pageNumber`, `categories`, et seulement les
+   catégories `SECURITY` (menaces IPS), `CLIENT_DEVICES` (connexions,
+   déconnexions, passages d'une borne à l'autre) et `INTERNET_AND_WAN`
+   (alertes de latence, de perte de paquets, de lien Internet) ; toute autre
+   catégorie est refusée avant l'envoi (`SYSTEM_LOG_CATEGORIES`). C'est la
+   requête qu'utilise l'interface de UniFi Network 10 pour afficher son
+   journal : elle lit, elle ne modifie rien.
 
 **Garde-fou principal** : le compte local « home-relay » est en **View Only**
 (lecture seule) pour UniFi Network. Même une requête erronée ne pourrait rien
@@ -66,7 +70,9 @@ modifier sur la passerelle.
 | Clients vus sur 24 h | `v2/api/site/<site>/clients/history?withinHours=24`, sinon `stat/alluser` filtré sur 24 h | nom, réseau, dernière borne, dernière apparition |
 | Noms des réseaux | `rest/networkconf` | nom du réseau (pour les clients qui n'ont que l'identifiant du réseau) |
 | Santé WAN, speedtest | `stat/health` (sinon `speedtest-status` de la passerelle) | état, fournisseur, latence, uptime, coupures ; date, débits et ping du dernier speedtest |
-| Menaces IPS | **POST** `v2/api/site/<site>/system-log/all` (recherche, catégorie `SECURITY` ; voir « Exception ») ; sur les versions anciennes, `stat/ips/event` puis `stat/alarm` en GET | titre, gravité, catégorie, date, direction (entrant/sortant si indiquée), bloquée ou non ; adresses IP/MAC remplacées par « [adresse] » |
+| Menaces IPS | **POST** `v2/api/site/<site>/system-log/all` (recherche, catégorie `SECURITY` ; voir « Exception ») ; sur les versions anciennes, `stat/ips/event` puis `stat/alarm` en GET | titre, gravité, catégorie, date, direction (entrant/sortant si indiquée), bloquée ou non, origine (Internet, ou appareil de la maison avec son nom s'il est connu) ; adresses IP/MAC remplacées par « [adresse] ». Au démarrage puis une fois par jour : relecture des 30 derniers jours (les doublons sont écartés par Supabase) |
+| Événements Wi-Fi des appareils | **POST** `system-log/all`, catégorie `CLIENT_DEVICES` (7 derniers jours au démarrage, puis depuis la dernière lecture ; 1500 par envoi au plus) | type (connexion, déconnexion, passage d'une borne à l'autre), date, appareil (identifiant haché + nom), bornes de départ et d'arrivée, durée de connexion. **Jamais** le nom du Wi-Fi ni d'adresse |
+| Alertes Internet | **POST** `system-log/all`, catégorie `INTERNET_AND_WAN` (30 derniers jours au démarrage) | type (latence élevée, perte de paquets, lien Internet), date, titre sans adresse |
 
 Home Assistant (API du Supervisor, `homeassistant_api: true`, sans jeton
 longue durée) : `GET /api/config` (version), `GET /api/states`, et par
@@ -86,7 +92,13 @@ voir `hass_ws.READ_ONLY`) :
   configuration, services (météo…). Sans registres (erreur affichée), repli
   sur la liste des entités indisponibles ;
 - chauffage : température, humidité et consigne des entités choisies ;
-- alarme : **état** des entités choisies (lecture seule) ;
+- alarme : **état** seulement (lecture seule, rien n'est commandé) : entités
+  choisies (`alarm_entities`), sinon les `alarm_control_panel.*` activées,
+  sinon — si le panneau a été désactivé volontairement dans Home Assistant —
+  les entités qui restent de l'appareil Somfy (SomfyProtect2MQTT : niveau de
+  sécurité, état, détecteurs). Si rien n'est trouvé, la source `alarme`
+  indique « désactivée : état non suivi volontairement (lecture seule) » :
+  c'est un choix, pas une panne ;
 - mises à jour en attente (entités `update.*` à `on`).
 
 ### Limites connues

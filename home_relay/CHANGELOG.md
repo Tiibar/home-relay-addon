@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.8
+
+- Menaces IPS : relecture des **30 derniers jours** au démarrage puis une
+  fois par jour ; origine de chaque menace (Internet, ou appareil de la
+  maison avec son nom s'il est connu, sans adresse).
+- Même recherche dans le journal (lecture seule), étendue à deux catégories :
+  `CLIENT_DEVICES` (connexions, déconnexions, passages d'une borne à l'autre,
+  durées de connexion) et `INTERNET_AND_WAN` (alertes de latence élevée, de
+  perte de paquets). Toute autre catégorie est refusée avant l'envoi. Jamais
+  de nom de Wi-Fi, d'adresse ni de site visité.
+- Alarme : si le panneau a été désactivé volontairement dans Home Assistant,
+  lecture de l'état sur les entités Somfy restantes (SomfyProtect2MQTT) ;
+  sinon « état non suivi volontairement (lecture seule) ».
+
 ## 1.0.7
 
 - Bornes Wi-Fi : largeur du canal de chaque radio (20/40/80/160 MHz), pour
