@@ -132,7 +132,7 @@ def _is_hue(dev: dict | None, reg: dict) -> bool:
     return reg.get("platform") == "hue" or "signify" in maker or "philips" in maker
 
 
-def map_states(config: dict, states: list, climate_entities=None, alarm_entities=None, registry=None):
+def map_states(config: dict, states: list, climate_entities=None, alarm_entities=None, registry=None, weather_entity=None):
     """Transforme les états (et les registres) en un résumé (fonction pure, testée).
 
     * appareils indisponibles regroupés PAR APPAREIL : « hors ligne » si toutes
@@ -221,6 +221,22 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
     unavailable_devices.sort(key=lambda d: (order[d["status"]], d["area"] or "~", d["name"]))
 
     # Chauffage (Tado via HomeKit) : entités choisies, sinon toutes les climate.*
+    # Par thermostat : consigne, température et humidité mesurées (au besoin
+    # lues sur les capteurs du même appareil), mode et état de chauffe, pièce.
+    siblings: dict[str, list[str]] = {}
+    for eid, reg in reg_index.entities.items():
+        if reg.get("device_id"):
+            siblings.setdefault(reg["device_id"], []).append(eid)
+
+    def sibling_value(dev, device_class, lo, hi):
+        for other in siblings.get((dev or {}).get("id"), []):
+            o = by_id.get(other) or {}
+            if other.startswith("sensor.") and (o.get("attributes") or {}).get("device_class") == device_class:
+                v = _num(o.get("state"), lo, hi)
+                if v is not None:
+                    return v
+        return None
+
     climate = []
     ids = climate_entities or sorted(e for e in by_id if e.startswith("climate."))
     for eid in ids:
@@ -228,20 +244,46 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
         if not s:
             continue
         a = s.get("attributes") or {}
+        reg, dev = reg_index.device_of(eid)
         if eid.startswith("climate."):
-            temp, hum, target = a.get("current_temperature"), a.get("current_humidity"), a.get("temperature")
+            temp = _num(a.get("current_temperature"), -50, 80)
+            hum = _num(a.get("current_humidity"), 0, 100)
+            target = _num(a.get("temperature"), -50, 80)
+            mode = clean_text(s.get("state"), 20) if s.get("state") not in ("unavailable", "unknown") else None
+            action = clean_text(a.get("hvac_action"), 20)
         else:
             dc = a.get("device_class")
-            temp = s.get("state") if dc == "temperature" else None
-            hum = s.get("state") if dc == "humidity" else None
-            target = None
-        reg, dev = reg_index.device_of(eid)
+            temp = _num(s.get("state"), -50, 80) if dc == "temperature" else None
+            hum = _num(s.get("state"), 0, 100) if dc == "humidity" else None
+            target, mode, action = None, None, None
+        if temp is None:
+            temp = sibling_value(dev, "temperature", -50, 80)
+        if hum is None:
+            hum = sibling_value(dev, "humidity", 0, 100)
         climate.append({
+            "entity_id": eid,
+            "kind": "zone",
             "name": Registry.device_name(dev) or _name(s) or eid,
-            "temperature": _num(temp, -50, 80),
-            "humidity": _num(hum, 0, 100),
-            "target": _num(target, -50, 80),
+            "area": reg_index.area_of(reg, dev),
+            "temperature": temp,
+            "humidity": hum,
+            "target": target,
+            "hvac_mode": mode,
+            "hvac_action": action,
         })
+
+    # Température extérieure : entité météo choisie, sinon la première weather.*
+    wid = weather_entity or next((e for e in sorted(by_id) if e.startswith("weather.")), None)
+    w = by_id.get(wid) if wid else None
+    if w and w.get("state") not in ("unavailable", "unknown"):
+        wa = w.get("attributes") or {}
+        t = _num(wa.get("temperature"), -50, 60) if wid.startswith("weather.") else _num(w.get("state"), -50, 60)
+        if t is not None:
+            climate.append({
+                "entity_id": wid, "kind": "outdoor", "name": "Extérieur", "area": None,
+                "temperature": t, "humidity": _num(wa.get("humidity"), 0, 100) if wid.startswith("weather.") else None,
+                "target": None, "hvac_mode": None, "hvac_action": None,
+            })
 
     # Alarme (lecture seule) : entités choisies, sinon les alarm_control_panel.* actives
     alarm = []

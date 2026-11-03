@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.6
+
+- Chauffage : pour chaque thermostat (Tado via HomeKit), consigne,
+  température et humidité mesurées (au besoin lues sur les capteurs du même
+  appareil), mode (`hvac_mode`) et état de chauffe (`hvac_action`), pièce.
+- Température extérieure : entité météo (option `weather_entity`, sinon la
+  première `weather.*`).
+
 ## 1.0.5
 
 - Journal à l'heure locale (fuseau de Home Assistant, Europe/Brussels par

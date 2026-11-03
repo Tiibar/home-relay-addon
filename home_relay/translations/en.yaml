@@ -25,6 +25,9 @@ configuration:
   climate_entities:
     name: Heating entities (optional)
     description: Entity IDs to read for temperature/humidity. Empty = all climate.* entities.
+  weather_entity:
+    name: Weather entity (optional)
+    description: Entity ID for the outdoor temperature (weather.* or a temperature sensor). Empty = the first weather.* entity.
   alarm_entities:
     name: Alarm entities (optional)
     description: Entity IDs whose state is read (read only). Empty = all enabled alarm_control_panel.* entities.

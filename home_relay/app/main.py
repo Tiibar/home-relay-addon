@@ -21,7 +21,7 @@ import homeassistant
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -90,7 +90,7 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
         h = raw["home_assistant"]
         sources["home_assistant_registry"] = "ok" if h["registry"] else f"erreur : {h['registry_error']}"
         ha_part = homeassistant.map_states(h["config"], h["states"], opts.get("climate_entities"),
-                                           opts.get("alarm_entities"), h["registry"])
+                                           opts.get("alarm_entities"), h["registry"], opts.get("weather_entity") or None)
 
     return {
         "v": 1,

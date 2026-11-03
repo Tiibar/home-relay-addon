@@ -159,7 +159,8 @@ class HomeAssistantMapping(unittest.TestCase):
         self.assertEqual(out["batteries"], [{"name": "Porte batterie", "area": None, "level": 18.0, "low": None}])
         self.assertEqual(out["unavailable"], [{"entity_id": "light.garage", "name": "Garage"}])
         self.assertEqual(out["unavailable_devices"], [])
-        self.assertEqual(out["climate"], [{"name": "Salon", "temperature": 20.5, "humidity": 48.0, "target": 21.0}])
+        self.assertEqual(out["climate"], [{"entity_id": "climate.salon", "kind": "zone", "name": "Salon", "area": None, "temperature": 20.5,
+                                           "humidity": 48.0, "target": 21.0, "hvac_mode": "heat", "hvac_action": None}])
         self.assertEqual(out["updates"][0]["latest"], "2026.11.1")
         self.assertEqual(out["alarm"], [{"name": "Alarme état", "state": "off"}])
         self.assertEqual(out["version"], "2026.11.0")
@@ -241,7 +242,8 @@ class HomeAssistantByDevice(unittest.TestCase):
         self.assertEqual(b[1], {"name": "Sensor Hall d'entrée", "area": "Hall d'entrée", "level": 22.0, "low": None})
 
     def test_climate_uses_device_names(self):
-        self.assertIn({"name": "Tado Bureau A&L", "temperature": 19.5, "humidity": 52.0, "target": 20.0}, self.out["climate"])
+        self.assertIn({"entity_id": "climate.tado_bureau", "kind": "zone", "name": "Tado Bureau A&L", "area": "Bureau A&L",
+                       "temperature": 19.5, "humidity": 52.0, "target": 20.0, "hvac_mode": "heat", "hvac_action": None}, self.out["climate"])
 
     def test_no_entity_id_needed_for_display(self):
         for d in self.out["unavailable_devices"] + self.out["batteries"]:
@@ -474,3 +476,34 @@ class UplinkPortAndVendor(unittest.TestCase):
         self.assertIsNone(unifi.map_devices(DEVICES, SECRET)[2]["uplink"]["port"])        # sans fil
         c = unifi.map_clients([dict(CLIENTS_NOW[0], oui="Espressif Inc.")], [], [], DEVICES, SECRET)[0]
         self.assertEqual(c["vendor"], "Espressif Inc.")
+
+
+class Heating(unittest.TestCase):
+    REGISTRY = {
+        "areas": [{"area_id": "sam", "name": "Salle à manger"}],
+        "devices": [{"id": "d1", "name": "Tado SàM fenêtre", "manufacturer": "tado", "area_id": "sam"}],
+        "entities": [
+            {"entity_id": "climate.tado_sam", "device_id": "d1", "platform": "homekit_controller"},
+            {"entity_id": "sensor.tado_sam_humidity", "device_id": "d1", "platform": "homekit_controller"},
+            {"entity_id": "weather.maison", "platform": "met"},
+        ],
+    }
+    STATES = [
+        st("climate.tado_sam", "heat", current_temperature=19.4, temperature=20.5, hvac_action="heating"),
+        st("sensor.tado_sam_humidity", "54", device_class="humidity", unit_of_measurement="%"),
+        st("weather.maison", "rainy", temperature=8.2, humidity=91),
+    ]
+
+    def test_thermostat_and_outdoor(self):
+        out = homeassistant.map_states({}, self.STATES, registry=self.REGISTRY)
+        zone, outdoor = out["climate"]
+        self.assertEqual(zone, {"entity_id": "climate.tado_sam", "kind": "zone", "name": "Tado SàM fenêtre", "area": "Salle à manger",
+                                "temperature": 19.4, "humidity": 54.0, "target": 20.5, "hvac_mode": "heat", "hvac_action": "heating"})
+        self.assertEqual(outdoor["kind"], "outdoor")
+        self.assertEqual((outdoor["name"], outdoor["temperature"], outdoor["humidity"]), ("Extérieur", 8.2, 91.0))
+
+    def test_unavailable_thermostat_and_chosen_weather(self):
+        states = [st("climate.tado_sam", "unavailable"), st("sensor.exterieur", "6.5", device_class="temperature")]
+        out = homeassistant.map_states({}, states, registry=self.REGISTRY, weather_entity="sensor.exterieur")
+        self.assertEqual(out["climate"][0]["hvac_mode"], None)
+        self.assertEqual(out["climate"][1]["temperature"], 6.5)
