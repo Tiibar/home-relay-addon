@@ -1,0 +1,30 @@
+configuration:
+  unifi_url:
+    name: UniFi gateway URL
+    description: Local address of the UniFi gateway, e.g. https://<gateway address> (no trailing slash).
+  unifi_username:
+    name: UniFi local username
+    description: Local UniFi account with read-only (View Only) access to UniFi Network.
+  unifi_password:
+    name: UniFi local password
+  unifi_site:
+    name: UniFi site
+    description: Usually "default".
+  unifi_verify_ssl:
+    name: Verify the gateway certificate
+    description: Leave off for the gateway's self-signed certificate (local network only).
+  supabase_function_url:
+    name: Supabase function URL
+    description: https://<project>.supabase.co/functions/v1/ingest-home
+  shared_secret:
+    name: Shared secret
+    description: Same value as RELAY_SHARED_SECRET in Supabase (40 characters). Also used to hash MAC addresses.
+  interval_minutes:
+    name: Interval (minutes)
+    description: Time between two sends (default 5).
+  climate_entities:
+    name: Heating entities (optional)
+    description: Entity IDs to read for temperature/humidity. Empty = all climate.* entities.
+  alarm_entities:
+    name: Alarm entities (optional)
+    description: Entity IDs whose state is read (read only). Empty = all enabled alarm_control_panel.* entities.

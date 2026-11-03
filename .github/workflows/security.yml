@@ -1,0 +1,27 @@
+# Contrôle de sécurité du dépôt PUBLIC : aucun secret, clé, mot de passe,
+# adresse IP ni adresse MAC — ni dans les fichiers, ni dans l'historique.
+# Échoue (croix rouge + e-mail de GitHub) dès qu'un élément interdit est poussé.
+# Pour qu'il BLOQUE l'intégration dans main, voir README (« Sécurité du dépôt »).
+name: Contrôle de sécurité
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Aucun secret ni adresse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # tout l'historique : un secret retiré reste visible dans un dépôt public
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fichiers et historique
+        run: python scripts/check_secrets.py --history
