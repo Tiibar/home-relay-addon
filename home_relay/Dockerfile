@@ -1,9 +1,10 @@
-ARG BUILD_FROM
-FROM $BUILD_FROM
+# Image de base : fournie par le Supervisor depuis build.yaml ; valeur par
+# défaut valide pour un build sans Supervisor (Home Assistant Green = aarch64).
+ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-python:3.13-alpine3.23
+FROM ${BUILD_FROM}
 
-# Python de la distribution, aucune dépendance externe (bibliothèque standard).
-RUN apk add --no-cache python3
-
+# Python est déjà dans l'image de base ; aucune dépendance externe
+# (bibliothèque standard uniquement).
 COPY app/ /app/
 WORKDIR /app
 CMD [ "python3", "-u", "/app/main.py" ]

@@ -19,7 +19,7 @@ import homeassistant
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 

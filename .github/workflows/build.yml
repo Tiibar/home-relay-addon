@@ -1,0 +1,48 @@
+# Construit l'image de l'add-on comme le Supervisor (image de base lue dans
+# build.yaml, passée en BUILD_FROM), pour aarch64 (Home Assistant Green, via
+# QEMU) et amd64, puis vérifie que le code démarre dans l'image.
+name: Build add-on
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            platform: linux/arm64
+          - arch: amd64
+            platform: linux/amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Image de base (build.yaml)
+        id: base
+        run: |
+          from=$(python3 -c "import re,sys; t=open('home_relay/build.yaml').read(); print(re.search(r'^\s*${{ matrix.arch }}:\s*(\S+)', t, re.M).group(1))")
+          echo "Image de base : $from"
+          echo "from=$from" >> "$GITHUB_OUTPUT"
+      - name: Build (comme le Supervisor)
+        run: |
+          docker buildx build --platform ${{ matrix.platform }} --load \
+            --build-arg BUILD_FROM=${{ steps.base.outputs.from }} \
+            -t home-relay:${{ matrix.arch }} home_relay
+      - name: Build sans BUILD_FROM (valeur par défaut du Dockerfile)
+        if: matrix.arch == 'aarch64'
+        run: docker buildx build --platform linux/arm64 -t home-relay:default home_relay
+      - name: Le code démarre dans l'image
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 home-relay:${{ matrix.arch }} -c \
+            "import sys, platform; sys.path.insert(0, '/app'); import main, unifi, homeassistant, sender, privacy; print('OK', main.VERSION, sys.version.split()[0], platform.machine())"
+      - name: Version identique (config.yaml / code)
+        run: grep -q "version: \"$(docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 home-relay:${{ matrix.arch }} -c "import sys; sys.path.insert(0,'/app'); import main; print(main.VERSION)")\"" home_relay/config.yaml
