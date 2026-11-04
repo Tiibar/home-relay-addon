@@ -150,7 +150,9 @@ class Mapping(unittest.TestCase):
         self.assertEqual(out["cpu_pct"], 6)
         self.assertEqual(out["ram_pct"], 30)
         self.assertEqual(out["uptime_h"], 1000)
-        self.assertEqual(out["volumes"], [{"name": "Volume 1", "status": None, "used_bytes": 1611328125 * 4096, "total_bytes": 2685546875 * 4096}])
+        # pas de dskTable dans AGENT : repli sur hrStorage (taille relue en non signé)
+        self.assertEqual(out["volumes"], [{"name": "Volume 1", "status": None, "source": "hr_storage",
+                                           "used_bytes": 1611328125 * 4096, "total_bytes": 2685546875 * 4096}])
         self.assertEqual(out["pools"], [{"name": "Groupe de stockage 1", "status": "degrade", "free_bytes": 4e12, "total_bytes": 11e12}])
         d1, d2 = out["disks"]
         self.assertEqual(d1, {"slot": "Disque 1", "model": "ST4000VN008-2DR166", "temp_c": 36, "status": "normal", "health_status": "normal", "power_on_hours": 70123})
@@ -158,6 +160,31 @@ class Mapping(unittest.TestCase):
         self.assertEqual(set(out["unavailable"]), set(nas.NOT_IN_SNMP))
         for reason in out["unavailable"].values():
             self.assertIn("non disponible via SNMP", reason)
+
+    def test_volume_from_filesystem_not_from_storage_pool(self):
+        # /volume1 : 10,5 To (base 1024) dont 67 % utilisés, sur 64 bits (Ko) ; le groupe de stockage dit autre chose
+        total_kb, used_kb = int(10.5 * 1024 ** 3), int(10.5 * 1024 ** 3 * 0.67)
+        agent = {**AGENT,
+                 "1.3.6.1.4.1.2021.9.1.2.1": '"/"', "1.3.6.1.4.1.2021.9.1.11.1": "1000", "1.3.6.1.4.1.2021.9.1.12.1": "0",
+                 "1.3.6.1.4.1.2021.9.1.2.2": '"/volume1"',
+                 "1.3.6.1.4.1.2021.9.1.11.2": str(total_kb % 2 ** 32), "1.3.6.1.4.1.2021.9.1.12.2": str(total_kb // 2 ** 32),
+                 "1.3.6.1.4.1.2021.9.1.15.2": str(used_kb % 2 ** 32), "1.3.6.1.4.1.2021.9.1.16.2": str(used_kb // 2 ** 32)}
+        c, _ = client(agent)
+        out = nas.map_nas(c.read())
+        self.assertEqual(len(out["volumes"]), 1)
+        vol = out["volumes"][0]
+        self.assertEqual((vol["name"], vol["source"], vol["total_bytes"]), ("Volume 1", "ucd_dsk", total_kb * 1024))
+        self.assertAlmostEqual(vol["used_bytes"] / vol["total_bytes"], 0.67, places=3)
+        self.assertEqual(nas.tib(vol["total_bytes"]), "10,5 To")
+
+    def test_negative_hr_storage_is_read_unsigned_and_no_pool_fallback(self):
+        agent = {**AGENT, "1.3.6.1.2.1.25.2.3.1.5.31": str(2685546875 - 2 ** 32)}
+        out = nas.map_nas(client(agent)[0].read())
+        self.assertEqual(out["volumes"][0]["total_bytes"], 2685546875 * 4096)
+        no_vol = {k: v for k, v in AGENT.items() if not k.startswith("1.3.6.1.2.1.25.2.3.1.3.31")}
+        out = nas.map_nas(client(no_vol)[0].read())
+        self.assertEqual(out["volumes"], [])
+        self.assertIn("volumes", out["unavailable"])
 
     def test_old_dsm_without_health_or_smart(self):
         agent = {k: v for k, v in AGENT.items() if not k.startswith((f"{S}.2.1.1.13", f"{S}.5."))}

@@ -129,9 +129,10 @@ Garde-fous (`nas.py`, testés) :
 |---|---|---|
 | Système | SYNOLOGY-SYSTEM-MIB (`1.3.6.1.4.1.6574.1`) : `systemStatus`, `temperature`, `modelName`, `version`, `upgradeAvailable` | état global, température, modèle, version de DSM, mise à jour disponible (oui / non) |
 | Disques | SYNOLOGY-DISK-MIB (`…6574.2`) : `diskID`, `diskModel`, `diskStatus`, `diskTemperature`, `diskHealthStatus` | emplacement, modèle, état, température, état de santé (DSM 7.1 et plus) |
-| RAID | SYNOLOGY-RAID-MIB (`…6574.3`) : `raidName`, `raidStatus`, `raidFreeSize`, `raidTotalSize` | nom, état, espace libre / total |
+| RAID | SYNOLOGY-RAID-MIB (`…6574.3`) : `raidName`, `raidStatus`, `raidFreeSize`, `raidTotalSize` | nom, état (l'espace du groupe de stockage n'est **pas** celui du volume : il n'est pas affiché comme tel) |
+| Volumes | UCD-SNMP-MIB `dskTable` (`1.3.6.1.4.1.2021.9.1`) : `dskPath`, `dskTotalLow/High`, `dskUsedLow/High` (64 bits, Ko) ; à défaut HOST-RESOURCES-MIB `hrStorage` | utilisé / total du système de fichiers `/volumeN`, comme DSM |
 | SMART | SYNOLOGY-SMART-MIB (`…6574.5`) : nom du disque, numéro et valeur brute des attributs | heures de fonctionnement (attribut 9) seulement |
-| Charge | HOST-RESOURCES-MIB : `hrProcessorLoad`, `hrSystemUptime`, `hrStorage` (description, unité, taille, utilisé) ; UCD-SNMP-MIB : mémoire | processeur (%), durée de fonctionnement, volumes `/volumeN` (utilisé / total), mémoire (%) |
+| Charge | HOST-RESOURCES-MIB : `hrProcessorLoad`, `hrSystemUptime` ; UCD-SNMP-MIB : mémoire | processeur (%), durée de fonctionnement, mémoire (%) |
 
 **Jamais lu ni envoyé** : numéro de série (`serialNumber` n'est pas dans la
 liste blanche), adresses, comptes, dossiers.

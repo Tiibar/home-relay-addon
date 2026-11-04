@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1
+
+- NAS : l'espace du volume vient du **système de fichiers** `/volume1`
+  (UCD-SNMP `dskTable`, 64 bits ; à défaut HOST-RESOURCES `hrStorage`, relu
+  en non signé), comme DSM. L'espace libre / total du groupe de stockage
+  (RAID-MIB) n'est plus utilisé pour le volume.
+- Journal : une ligne par volume et par groupe de stockage avec les chiffres
+  lus et leur source (en To, base 1024 comme DSM).
+
 ## 1.2.0
 
 - **NAS Synology : SNMPv3** remplace l'API Web de DSM (plus aucun compte DSM).

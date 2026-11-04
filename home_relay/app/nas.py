@@ -66,6 +66,12 @@ ALLOWED_TABLES = {
     "1.3.6.1.2.1.25.2.3.1.4": "store_units",  # hrStorageAllocationUnits
     "1.3.6.1.2.1.25.2.3.1.5": "store_size",   # hrStorageSize
     "1.3.6.1.2.1.25.2.3.1.6": "store_used",   # hrStorageUsed
+    # UCD-SNMP-MIB dskTable : utilisation réelle du système de fichiers (/volumeN), en Ko, sur 64 bits
+    "1.3.6.1.4.1.2021.9.1.2": "dsk_path",       # dskPath
+    "1.3.6.1.4.1.2021.9.1.11": "dsk_total_lo",  # dskTotalLow
+    "1.3.6.1.4.1.2021.9.1.12": "dsk_total_hi",  # dskTotalHigh
+    "1.3.6.1.4.1.2021.9.1.15": "dsk_used_lo",   # dskUsedLow
+    "1.3.6.1.4.1.2021.9.1.16": "dsk_used_hi",   # dskUsedHigh
 }
 ALLOWED_COMMANDS = {"snmpget", "snmpwalk"}
 # Ce que SNMP ne donne pas : affiché tel quel, jamais deviné
@@ -232,6 +238,17 @@ def _int(v):
     return int(m.group(1)) if m else None
 
 
+def _u32(v):
+    """Entier SNMP 32 bits relu en non signé (un hrStorage trop grand revient négatif)."""
+    n = _int(v)
+    return n + 2 ** 32 if n is not None and n < 0 else n
+
+
+def _u64(lo, hi):
+    lo, hi = _u32(lo), _u32(hi)
+    return None if lo is None else (hi or 0) * 2 ** 32 + lo
+
+
 def _col(values: dict, name: str) -> dict[str, str]:
     """{index: valeur} d'une colonne de table."""
     base = next(k for k, v in ALLOWED_TABLES.items() if v == name)
@@ -264,6 +281,11 @@ def _smart_hours(values: dict) -> dict[int, int]:
     return out
 
 
+def tib(b) -> str:
+    """Octets -> « 10,5 To » en base 1024, comme l'affiche DSM (journal seulement)."""
+    return "?" if b is None else f"{b / 1024 ** 4:.1f} To".replace(".", ",")
+
+
 def map_nas(result: dict) -> dict:
     v, errors = result.get("values") or {}, dict(result.get("errors") or {})
     unavailable: dict[str, str] = {}
@@ -281,15 +303,26 @@ def map_nas(result: dict) -> dict:
     loads = [x for x in (_int(x) for x in _col(v, "cpu_load").values()) if x is not None]
     cpu_pct = round(sum(loads) / len(loads), 1) if loads else None
 
-    # Volumes : HOST-RESOURCES-MIB hrStorage « /volumeN »
-    descr, units, size, used_ = (_col(v, k) for k in ("store_descr", "store_units", "store_size", "store_used"))
+    # Volumes : utilisation réelle du système de fichiers /volumeN (comme DSM).
+    # 1) UCD-SNMP-MIB dskTable (64 bits, Ko) ; 2) à défaut HOST-RESOURCES-MIB hrStorage.
+    # Jamais l'espace du groupe de stockage (RAID-MIB), qui n'est pas celui du volume.
     volumes = []
-    for idx, d in sorted(descr.items(), key=lambda x: x[1]):
-        m = re.fullmatch(r"/volume(\d+)", d.strip())
-        u, s, us = _int(units.get(idx)), _int(size.get(idx)), _int(used_.get(idx))
-        if m and u and s is not None:
-            volumes.append({"name": f"Volume {m.group(1)}", "status": None,
-                            "used_bytes": us * u if us is not None else None, "total_bytes": s * u})
+    paths = _col(v, "dsk_path")
+    t_lo, t_hi, u_lo, u_hi = (_col(v, k) for k in ("dsk_total_lo", "dsk_total_hi", "dsk_used_lo", "dsk_used_hi"))
+    for idx, p in sorted(paths.items(), key=lambda x: x[1]):
+        m = re.fullmatch(r"/volume(\d+)", p.strip())
+        total_kb, used_kb = _u64(t_lo.get(idx), t_hi.get(idx)), _u64(u_lo.get(idx), u_hi.get(idx))
+        if m and total_kb:
+            volumes.append({"name": f"Volume {m.group(1)}", "status": None, "source": "ucd_dsk",
+                            "used_bytes": used_kb * 1024 if used_kb is not None else None, "total_bytes": total_kb * 1024})
+    if not volumes:
+        descr, units, size, used_ = (_col(v, k) for k in ("store_descr", "store_units", "store_size", "store_used"))
+        for idx, d in sorted(descr.items(), key=lambda x: x[1]):
+            m = re.fullmatch(r"/volume(\d+)", d.strip())
+            u, s, us = _int(units.get(idx)), _u32(size.get(idx)), _u32(used_.get(idx))
+            if m and u and s:
+                volumes.append({"name": f"Volume {m.group(1)}", "status": None, "source": "hr_storage",
+                                "used_bytes": us * u if us is not None else None, "total_bytes": s * u})
 
     # Groupes de stockage / RAID : SYNOLOGY-RAID-MIB
     names, rstat, rfree, rtotal = (_col(v, k) for k in ("raid_name", "raid_status", "raid_free", "raid_total"))
@@ -318,6 +351,8 @@ def map_nas(result: dict) -> dict:
         unavailable["disk_health"] = "état de santé des disques absent de la MIB de ce NAS"
     if disks and all(d["power_on_hours"] is None for d in disks):
         unavailable["smart"] = "heures de fonctionnement absentes (SYNOLOGY-SMART-MIB)"
+    if not volumes:
+        unavailable["volumes"] = "utilisation du volume absente (UCD-SNMP dskTable et HOST-RESOURCES hrStorage)"
     if ram_pct is None:
         unavailable["memory"] = "mémoire absente (UCD-SNMP-MIB)"
     for key, reason in errors.items():
@@ -325,7 +360,7 @@ def map_nas(result: dict) -> dict:
             unavailable["storage"] = reason
         elif key.startswith("raid_") and not pools:
             unavailable["raid"] = reason
-        elif key.startswith("store_") and not volumes:
+        elif key.startswith(("store_", "dsk_")) and not volumes:
             unavailable["volumes"] = reason
     unavailable.update(NOT_IN_SNMP)
 

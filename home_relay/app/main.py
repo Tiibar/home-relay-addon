@@ -23,7 +23,7 @@ import nas
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -190,6 +190,11 @@ def main():
             if payload.get("nas"):
                 n = payload["nas"]
                 log.info("NAS (SNMP) : %d disque(s), %d volume(s), %d groupe(s) de stockage.", len(n["disks"]), len(n["volumes"]), len(n["pools"]))
+                for vol in n["volumes"]:  # chiffres seulement : d'où vient l'espace affiché
+                    log.info("NAS : %s : %s utilisés sur %s (%s).", vol["name"], nas.tib(vol["used_bytes"]), nas.tib(vol["total_bytes"]),
+                             "système de fichiers, UCD-SNMP dskTable" if vol.get("source") == "ucd_dsk" else "système de fichiers, HOST-RESOURCES hrStorage")
+                for pool in n["pools"]:
+                    log.info("NAS : %s : %s libres sur %s (RAID-MIB, non utilisé pour l'espace du volume).", pool["name"], nas.tib(pool["free_bytes"]), nas.tib(pool["total_bytes"]))
                 for k, v in n["unavailable"].items():
                     if k not in nas.NOT_IN_SNMP:
                         log.info("NAS : %s non disponible : %s", k, v)
