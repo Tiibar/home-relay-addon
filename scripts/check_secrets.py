@@ -10,7 +10,7 @@ est détecté. Bibliothèque standard uniquement.
 
 Seules exceptions, volontaires et documentées :
   * adresses IP de documentation (RFC 5737 : 192.0.2.0/24, 198.51.100.0/24,
-    203.0.113.0/24) et 0.0.0.0 / 127.0.0.1 ;
+    203.0.113.0/24) et 0.0.0.0 / 127.0.0.1 / :: (adresse non spécifiée) ;
   * adresses MAC factices des tests : xx:00:00:00:00:yy et aa:bb:cc:dd:ee:ff.
 """
 
@@ -41,7 +41,8 @@ IPV6 = re.compile(r"(?<![\w:])[0-9a-fA-F:]*:[0-9a-fA-F:]*:[0-9a-fA-F:]*(?![\w:])
 MAC = re.compile(r"(?<![\w:-])[0-9a-fA-F]{2}(?:([:-])[0-9a-fA-F]{2})(?:\1[0-9a-fA-F]{2}){4}(?![\w:-])")
 
 DOC_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32")]
-ALLOWED_IPS = {"0.0.0.0", "127.0.0.1", "::1"}
+# « :: » = adresse non spécifiée (comme 0.0.0.0) ; apparaît aussi dans les expressions régulières « (?::…) »
+ALLOWED_IPS = {"0.0.0.0", "127.0.0.1", "::1", "::"}
 FAKE_MAC = re.compile(r"^(?:[0-9a-f]{2}[:-]00[:-]00[:-]00[:-]00[:-][0-9a-f]{2}|aa[:-]bb[:-]cc[:-]dd[:-]ee[:-]ff)$", re.I)
 
 SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".woff", ".woff2")

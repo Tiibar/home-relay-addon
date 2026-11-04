@@ -32,7 +32,7 @@ Documentation complète (options, vie privée, données lues, limites) :
   historique complet. Il échoue s'il trouve une clé (Anthropic, GitHub,
   Supabase, AWS, Google, Slack, JWT, clé privée), un mot de passe ou secret en
   clair, des identifiants dans une URL, une adresse IP (v4/v6) ou une adresse
-  MAC. Seules exceptions : adresses de documentation (RFC 5737, `2001:db8::/32`)
+  MAC. Seules exceptions : adresses de documentation (RFC 5737, `2001:db8::/32`), adresses non spécifiées (`0.0.0.0`, `::`)
   et fausses MAC des tests (`xx:00:00:00:00:yy`, `aa:bb:cc:dd:ee:ff`).
 - **Secret scanning + push protection** de GitHub : refusent le push lui-même
   quand il contient une clé d'un fournisseur connu.

@@ -23,6 +23,11 @@ class Detects(unittest.TestCase):
         self.assertIn("adresse IP", kinds("wan " + J(["81", ".82", ".83", ".84"])))
         self.assertIn("adresse IPv6", kinds("ip " + J(["fe8", "0:", ":1ff:fe23", ":4567:890a"])))
 
+    def test_regex_non_capturing_group_is_not_an_address(self):
+        # « (?::(\d{2})) » contient « :: » (adresse non spécifiée), pas une adresse réelle
+        self.assertEqual(kinds('m = re.match(r"(\\d{2}):(\\d{2})(?::(\\d{2}))?", v)'), set())
+        self.assertIn("adresse IPv6", kinds("ip " + J(["2a02", ":a03f", "::1"])))
+
     def test_mac_addresses(self):
         self.assertIn("adresse MAC", kinds("mac " + J(["3c", ":22:fb", ":12:34:56"])))
         self.assertIn("adresse MAC", kinds("mac " + J(["3C", "-22-FB", "-12-34-56"])))
