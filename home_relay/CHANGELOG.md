@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0
+
+- **NAS Synology : SNMPv3** remplace l'API Web de DSM (plus aucun compte DSM).
+  Lecture seule : `snmpget` et `snmpwalk` uniquement, `snmpset` refusé dans le
+  code et retiré de l'image ; liste blanche d'OID (SYNOLOGY-SYSTEM, -DISK,
+  -RAID, -SMART, HOST-RESOURCES, UCD-SNMP) ; jamais le numéro de série.
+- Données : état global, température, version de DSM, mise à jour disponible,
+  processeur, mémoire, volumes, RAID (état, espace), disques (modèle, état,
+  température, état de santé, heures de fonctionnement).
+- « Non disponible via SNMP » : tests SMART, nettoyage des données, mises à
+  jour des paquets.
+- Options : `nas_host`, `nas_snmp_user`, `nas_snmp_auth_password`,
+  `nas_snmp_priv_password` (remplacent `nas_url`, `nas_username`,
+  `nas_password`, `nas_verify_ssl`).
+
 ## 1.1.0
 
 - **NAS Synology** (facultatif) : toutes les 30 min, lecture seule par l'API

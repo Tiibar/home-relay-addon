@@ -1,7 +1,7 @@
 # Home Relay
 
 Relais **en lecture seule** : toutes les 5 minutes, il lit la passerelle UniFi
-locale et Home Assistant (et toutes les 30 minutes le NAS Synology), puis envoie un résumé au tableau de bord de la maison
+locale et Home Assistant (et toutes les 30 minutes le NAS Synology, en SNMPv3), puis envoie un résumé au tableau de bord de la maison
 (fonction Supabase `ingest-home`). **Il ne commande rien** : aucun
 redémarrage, aucun changement de configuration, aucun appel de service Home
 Assistant.
@@ -18,9 +18,9 @@ Assistant.
 | `shared_secret` | Secret partagé (40 caractères), identique au secret `RELAY_SHARED_SECRET` de Supabase. |
 | `interval_minutes` | Intervalle entre deux envois (5 par défaut). |
 | `climate_entities` | Facultatif. Entités lues pour la température et l'humidité. Vide = toutes les `climate.*`. |
-| `nas_url` | Facultatif. Adresse locale du NAS Synology, `https://<adresse du NAS>:<port HTTPS de DSM>` (sans `/` final), par exemple `https://<adresse du NAS>:3041` ; le port HTTPS est dans DSM → Panneau de configuration → Portail de connexion. Vide = NAS non lu. |
-| `nas_username` / `nas_password` | Compte NAS **dédié, non administrateur** (ex. `home-relay`), voir « NAS Synology ». |
-| `nas_verify_ssl` | Désactivé par défaut : le NAS a un certificat auto-signé (réseau local uniquement). |
+| `nas_host` | Facultatif. Adresse locale du NAS Synology (adresse ou nom, sans `https://` ni port). Lu en **SNMPv3** (UDP 161). Vide = NAS non lu. |
+| `nas_snmp_user` | Utilisateur **SNMPv3** créé sur le NAS (aucun compte DSM). |
+| `nas_snmp_auth_password` / `nas_snmp_priv_password` | Mots de passe SNMPv3 : authentification (SHA) et chiffrement (AES), 8 caractères au moins, sans guillemet. |
 | `alarm_entities` | Facultatif. Entités dont l'**état** est lu (lecture seule). Vide = les `alarm_control_panel.*` activées, sinon les entités Somfy restantes (voir plus bas). |
 
 Aucune valeur n'est écrite dans ce dépôt public : tout passe par cette
@@ -107,43 +107,44 @@ voir `hass_ws.READ_ONLY`) :
   (Companion App, intégration `mobile_app`), qui ne sont pas des appareils de
   la maison.
 
-### NAS Synology (module ≥ 1.1.0)
+### NAS Synology (module ≥ 1.2.0) : SNMPv3, lecture seule
 
-Toutes les 30 minutes, par l'**API Web officielle de DSM** (`/webapi/…`),
-avec un compte NAS dédié **non administrateur**. Le client du module n'autorise
-que les couples (API, méthode) de **lecture** de la liste blanche
-`nas.ALLOWED_CALLS` (testée) ; tout autre appel, tout mot d'écriture dans le
-nom de la méthode (`set`, `create`, `delete`, `start`, `install`…) et tout
-paramètre inconnu sont refusés **avant l'envoi**. Seule requête POST : la
-connexion (le mot de passe est dans le corps, jamais dans l'adresse). La
-session est gardée (pas une connexion toutes les 30 min) ; une connexion
-refusée n'est retentée que 30 min plus tard (pas de blocage automatique).
+Toutes les 30 minutes, par **SNMPv3** (UDP 161), **sans aucun compte DSM** :
+niveau « authPriv », authentification **SHA**, chiffrement **AES**. Sur le NAS :
+Panneau de configuration → Terminal & SNMP → SNMP : SNMPv1/v2c désactivés,
+SNMPv3 activé avec un utilisateur dédié.
 
-| Donnée | API / méthode | Champs gardés |
+Garde-fous (`nas.py`, testés) :
+
+- seules commandes possibles : `snmpget` (GET) et `snmpwalk` (GETNEXT, pour
+  parcourir une colonne de table) ; `snmpset` et toute autre commande sont
+  refusés dans le code avant tout lancement, et **retirés de l'image** ;
+- seuls les OID de la liste blanche (`ALLOWED_OIDS`, `ALLOWED_TABLES`) sont
+  demandés ; toute autre demande est refusée avant l'envoi, et toute réponse
+  hors liste blanche est ignorée ;
+- les deux mots de passe ne passent jamais sur la ligne de commande : ils sont
+  dans un fichier temporaire (droits 600) lu par net-snmp.
+
+| Donnée | MIB / OID | Gardé |
 |---|---|---|
-| Chemins des API | `SYNO.API.Info` / `query` (sans session) | chemin, versions |
-| Session | `SYNO.API.Auth` / `login` (POST) | identifiant de session (jamais envoyé) |
-| Système | `SYNO.Core.System` / `info` | modèle, version de DSM, température, alerte de température, état, durée de fonctionnement |
-| Charge | `SYNO.Core.System.Utilization` / `get` | processeur (%), mémoire (%) |
-| Stockage | `SYNO.Storage.CGI.Storage` / `load_info` | volumes (état, utilisé, total), groupes de stockage (état, type de RAID, nettoyage des données), disques (emplacement, modèle, fabricant, taille, température, état) |
-| SMART | `SYNO.Storage.CGI.Smart` / `get_health_info`, `get_smart_info` | dernier test (type, résultat, date), santé IronWolf, heures de fonctionnement (attribut 9) |
-| Mise à jour de DSM | `SYNO.Core.Upgrade.Server` / `check` | disponible ou non, version (demande au NAS s'il existe une version plus récente : rien n'est téléchargé ni installé) |
-| Paquets | `SYNO.Core.Package` / `list`, `SYNO.Core.Package.Server` / `list` | nom et version des paquets qui ont une mise à jour, nombre de paquets installés |
+| Système | SYNOLOGY-SYSTEM-MIB (`1.3.6.1.4.1.6574.1`) : `systemStatus`, `temperature`, `modelName`, `version`, `upgradeAvailable` | état global, température, modèle, version de DSM, mise à jour disponible (oui / non) |
+| Disques | SYNOLOGY-DISK-MIB (`…6574.2`) : `diskID`, `diskModel`, `diskStatus`, `diskTemperature`, `diskHealthStatus` | emplacement, modèle, état, température, état de santé (DSM 7.1 et plus) |
+| RAID | SYNOLOGY-RAID-MIB (`…6574.3`) : `raidName`, `raidStatus`, `raidFreeSize`, `raidTotalSize` | nom, état, espace libre / total |
+| SMART | SYNOLOGY-SMART-MIB (`…6574.5`) : nom du disque, numéro et valeur brute des attributs | heures de fonctionnement (attribut 9) seulement |
+| Charge | HOST-RESOURCES-MIB : `hrProcessorLoad`, `hrSystemUptime`, `hrStorage` (description, unité, taille, utilisé) ; UCD-SNMP-MIB : mémoire | processeur (%), durée de fonctionnement, volumes `/volumeN` (utilisé / total), mémoire (%) |
 
-**Jamais envoyé** : numéros de série, adresses IP ou MAC, noms d'utilisateur,
-noms des dossiers partagés, contenu des fichiers.
+**Jamais lu ni envoyé** : numéro de série (`serialNumber` n'est pas dans la
+liste blanche), adresses, comptes, dossiers.
 
-**Information non disponible** : si DSM refuse une lecture au compte du module
-(souvent `code DSM 105` : permission refusée, ces API étant réservées aux
-administrateurs sur DSM 7.1), elle est envoyée « non disponible » avec la
-raison, et le journal du module l'écrit à chaque lecture
-(`NAS : storage non disponible : …`). À la première lecture, le journal liste
-aussi les **noms** des champs reçus de DSM (jamais leurs valeurs), pour ajuster
-le module si un champ porte un autre nom sur ce NAS.
+**Non disponible via SNMP** (envoyé tel quel, jamais deviné) : historique et
+résultat des tests SMART, date du dernier nettoyage des données, mises à jour
+des paquets. Une table absente de ce NAS (ex. état de santé des disques sur un
+DSM ancien) est aussi signalée « non disponible ».
 
-Format des réponses établi d'après la documentation de l'API Web de Synology
-et des projets communautaires, **sans accès au NAS de la maison** : les champs
-manquants sont signalés « non disponible » plutôt que devinés.
+**Pourquoi pas l'API Web de DSM** (module 1.1.0, abandonné) : elle exige un
+compte DSM ; un compte non administrateur est refusé par l'API, et pouvait
+pourtant se connecter à DSM par QuickConnect. SNMPv3 ne demande aucun compte
+DSM et ne permet aucune écriture avec ce module.
 
 ### Limites connues
 

@@ -1,5 +1,5 @@
 name: Home Relay
-version: "1.1.0"
+version: "1.2.0"
 slug: home_relay
 description: Relais en lecture seule de la passerelle UniFi locale, de Home Assistant et du NAS Synology vers le tableau de bord de la maison (Supabase). Ne commande rien.
 url: https://github.com/Tiibar/home-relay-addon
@@ -18,7 +18,6 @@ options:
   climate_entities: []
   weather_entity: ""
   alarm_entities: []
-  nas_verify_ssl: false
 schema:
   unifi_url: url
   unifi_username: str
@@ -33,7 +32,7 @@ schema:
   weather_entity: str?
   alarm_entities:
     - str?
-  nas_url: url?
-  nas_username: str?
-  nas_password: password?
-  nas_verify_ssl: bool
+  nas_host: str?
+  nas_snmp_user: str?
+  nas_snmp_auth_password: password?
+  nas_snmp_priv_password: password?

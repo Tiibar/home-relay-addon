@@ -2,7 +2,7 @@
 
 Toutes les N minutes :
   1. lit la passerelle UniFi locale (GET) et Home Assistant (GET), et toutes
-     les 30 min le NAS Synology (API Web de DSM, liste blanche de lectures) ;
+     les 30 min le NAS Synology (SNMPv3 en lecture seule, liste blanche d'OID) ;
   2. construit un instantané sans adresse IP, sans adresse MAC en clair
      (HMAC-SHA256 avec le secret), sans site visité ni DNS ;
   3. l'envoie à la fonction Supabase (file d'attente si échec).
@@ -23,7 +23,7 @@ import nas
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -36,10 +36,8 @@ def load_options(path: str = OPTIONS) -> dict:
     missing = [k for k in ("unifi_url", "unifi_username", "unifi_password", "supabase_function_url", "shared_secret") if not opts.get(k)]
     if missing:
         raise SystemExit(f"Configuration incomplète : {', '.join(missing)}")
-    if opts.get("nas_url") and not str(opts["nas_url"]).startswith("https://"):
-        raise SystemExit("L'adresse du NAS doit commencer par https:// (port HTTPS de DSM : 3041 à la maison, voir Portail de connexion).")
-    if opts.get("nas_url") and not (opts.get("nas_username") and opts.get("nas_password")):
-        raise SystemExit("NAS : utilisateur et mot de passe obligatoires quand l'adresse du NAS est renseignée.")
+    if opts.get("nas_host") and not all(opts.get(k) for k in ("nas_snmp_user", "nas_snmp_auth_password", "nas_snmp_priv_password")):
+        raise SystemExit("NAS : utilisateur SNMP et deux mots de passe (authentification, chiffrement) obligatoires quand l'adresse du NAS est renseignée.")
     if len(opts["shared_secret"]) < 32:
         raise SystemExit("Le secret partagé doit faire au moins 32 caractères (40 conseillés).")
     if not str(opts["supabase_function_url"]).startswith("https://"):
@@ -52,10 +50,13 @@ def short(e: Exception) -> str:
 
 
 def make_nas_client(opts: dict):
-    """Client NAS, ou None si l'adresse du NAS n'est pas renseignée (lecture désactivée)."""
-    if not opts.get("nas_url"):
+    """Client SNMPv3 du NAS, ou None si l'adresse du NAS n'est pas renseignée (lecture désactivée)."""
+    if not opts.get("nas_host"):
         return None
-    return nas.NasClient(opts["nas_url"], opts["nas_username"], opts["nas_password"], bool(opts.get("nas_verify_ssl")))
+    try:
+        return nas.NasClient(opts["nas_host"], opts["nas_snmp_user"], opts["nas_snmp_auth_password"], opts["nas_snmp_priv_password"])
+    except nas.NasError as e:
+        raise SystemExit(f"NAS : {e}") from None
 
 
 def collect(opts: dict, client: "unifi.UnifiClient", nas_client=None) -> dict:
@@ -187,12 +188,11 @@ def main():
         try:
             payload = collect(opts, client, nas_client)
             if payload.get("nas"):
-                for k, v in payload["nas"]["unavailable"].items():
-                    log.info("NAS : %s non disponible : %s", k, v)
-                if nas_client and not nas_client.keys_logged:
-                    # une fois : les champs reçus de DSM (noms seulement, jamais les valeurs), pour ajuster le module
-                    log.info("NAS : champs reçus de DSM : %s", json.dumps(nas_client.response_keys, ensure_ascii=False)[:2000])
-                    nas_client.keys_logged = True
+                n = payload["nas"]
+                log.info("NAS (SNMP) : %d disque(s), %d volume(s), %d groupe(s) de stockage.", len(n["disks"]), len(n["volumes"]), len(n["pools"]))
+                for k, v in n["unavailable"].items():
+                    if k not in nas.NOT_IN_SNMP:
+                        log.info("NAS : %s non disponible : %s", k, v)
             failed = {k: v for k, v in payload["sources"].items() if not v.startswith("ok")}
             n_clients = len((payload.get("unifi") or {}).get("clients") or [])
             log.info("Lu : %d clients, %d équipements UniFi%s.", n_clients,

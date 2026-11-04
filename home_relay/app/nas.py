@@ -1,438 +1,345 @@
-"""Lecture du NAS Synology (API Web officielle de DSM), en LECTURE SEULE.
+"""Lecture du NAS Synology par SNMPv3, en LECTURE SEULE (aucun compte DSM).
 
-Chaque appel passe par une LISTE BLANCHE stricte de couples (API, méthode)
-(`ALLOWED_CALLS`, vérifiée dans `_call` avant tout envoi) : uniquement des
-méthodes qui lisent (`query`, `login`, `info`, `get`, `list`, `load_info`,
-`get_health_info`, `get_smart_info`, `check`). Tout autre appel (`set`,
-`create`, `delete`, `start`, `stop`, `run`, `install`, `upgrade`…) est refusé
-par le module lui-même, avant d'être envoyé (`ForbiddenCall`).
+Le module appelle les outils standard net-snmp (`snmpget`, `snmpwalk`) :
+  * seulement ces deux commandes (GET, et GETNEXT pour parcourir une table) ;
+    `snmpset` et toute autre commande sont refusés dans le code avant tout
+    lancement (`ForbiddenRequest`), et `snmpset` est retiré de l'image ;
+  * seulement les OID de la liste blanche (`ALLOWED_OIDS` : valeurs exactes,
+    `ALLOWED_TABLES` : colonnes de tables) ; toute autre demande est refusée
+    avant l'envoi, et toute réponse hors liste blanche est ignorée ;
+  * SNMPv3 « authPriv » (authentification SHA, chiffrement AES) avec
+    l'utilisateur SNMP du NAS ; les deux mots de passe ne passent jamais sur
+    la ligne de commande : ils sont écrits dans un fichier de configuration
+    temporaire (droits 600), lu par net-snmp (`SNMPCONFPATH`).
 
-  * SYNO.API.Info / query            : chemins et versions des API (sans session)
-  * SYNO.API.Auth / login            : ouverture de la session (seule requête
-                                       POST, pour que le mot de passe ne soit
-                                       jamais dans une adresse) ; pas de logout :
-                                       la session est gardée, reconnexion si elle
-                                       expire (évite une ligne de journal DSM
-                                       toutes les 30 min)
-  * SYNO.Core.System / info          : modèle, version DSM, température, état
-  * SYNO.Core.System.Utilization/get : processeur, mémoire
-  * SYNO.Storage.CGI.Storage / load_info : volumes, groupes de stockage (RAID),
-                                       disques (modèle, taille, température, état)
-  * SYNO.Storage.CGI.Smart / get_health_info, get_smart_info : dernier test
-                                       SMART, santé IronWolf, heures de fonctionnement
-  * SYNO.Core.Upgrade.Server / check : demande au NAS s'il existe une version de
-                                       DSM plus récente (ne télécharge et
-                                       n'installe rien)
-  * SYNO.Core.Package / list         : paquets installés et leur version
-  * SYNO.Core.Package.Server / list  : dernières versions disponibles des paquets
+Jamais lu ni envoyé : le numéro de série (SYNOLOGY-SYSTEM-MIB serialNumber,
+absent de la liste blanche), les adresses, les comptes, les dossiers.
 
-Garde-fou principal : le compte NAS « home-relay » n'est PAS administrateur
-(groupe « users », aucune application autorisée hormis DSM). Une information
-que ce compte ne peut pas lire est envoyée « non disponible », avec le code
-d'erreur de DSM (105 = permission refusée).
-
-Jamais envoyé : numéros de série, adresses IP ou MAC, noms d'utilisateur,
-noms des dossiers partagés, contenu des fichiers.
+Ce que SNMP ne fournit pas (historique des tests SMART, nettoyage des données,
+mises à jour des paquets) est envoyé « non disponible via SNMP ».
 """
 
-import json
+import os
 import re
-import ssl
+import shutil
+import subprocess
+import tempfile
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 from privacy import clean_text
 
-TIMEOUT = 25
 READ_EVERY_S = 30 * 60          # le NAS change lentement : une lecture toutes les 30 min
-SESSION = "HomeRelay"
+TIMEOUT_S = 5                    # par requête SNMP (net-snmp -t)
+RETRIES = 1
+PROCESS_TIMEOUT_S = 60
 
-ALLOWED_CALLS = {
-    ("SYNO.API.Info", "query"),
-    ("SYNO.API.Auth", "login"),
-    ("SYNO.Core.System", "info"),
-    ("SYNO.Core.System.Utilization", "get"),
-    ("SYNO.Storage.CGI.Storage", "load_info"),
-    ("SYNO.Storage.CGI.Smart", "get_health_info"),
-    ("SYNO.Storage.CGI.Smart", "get_smart_info"),
-    ("SYNO.Core.Upgrade.Server", "check"),
-    ("SYNO.Core.Package", "list"),
-    ("SYNO.Core.Package.Server", "list"),
+SYN = "1.3.6.1.4.1.6574"
+# Valeurs uniques (GET)
+ALLOWED_OIDS = {
+    f"{SYN}.1.1.0": "system_status",     # SYNOLOGY-SYSTEM-MIB systemStatus (1 normal, 2 failed)
+    f"{SYN}.1.2.0": "temperature",       # temperature (°C)
+    f"{SYN}.1.5.1.0": "model",           # modelName
+    f"{SYN}.1.5.3.0": "version",         # version (DSM)
+    f"{SYN}.1.5.4.0": "upgrade",         # upgradeAvailable
+    "1.3.6.1.2.1.25.1.1.0": "uptime",    # HOST-RESOURCES-MIB hrSystemUptime (centièmes de seconde)
+    "1.3.6.1.4.1.2021.4.5.0": "mem_total",    # UCD-SNMP-MIB memTotalReal (Ko)
+    "1.3.6.1.4.1.2021.4.6.0": "mem_avail",    # memAvailReal
+    "1.3.6.1.4.1.2021.4.14.0": "mem_buffer",  # memBuffer
+    "1.3.6.1.4.1.2021.4.15.0": "mem_cached",  # memCached
 }
-# Seule requête POST : la connexion (mot de passe dans le corps, pas dans l'adresse)
-POST_CALLS = {("SYNO.API.Auth", "login")}
-# Mots qui désignent une modification : refusés même s'ils apparaissaient un jour dans la liste
-WRITE_WORDS = re.compile(r"set|create|delete|remove|start|stop|run|install|uninstall|upgrade|update|reboot|shutdown|"
-                         r"format|repair|enable|disable|apply|save|edit|add|cancel|test", re.I)
-# Paramètres autorisés : jamais de paramètre libre vers DSM
-ALLOWED_PARAMS = {"api", "version", "method", "query", "account", "passwd", "session", "format", "_sid",
-                  "device", "additional", "blforcereload", "updateSprite", "type"}
+# Colonnes de tables (parcourues par GETNEXT, sans sortir de la colonne)
+ALLOWED_TABLES = {
+    f"{SYN}.2.1.1.2": "disk_id",          # SYNOLOGY-DISK-MIB diskID (« Disk 1 »)
+    f"{SYN}.2.1.1.3": "disk_model",       # diskModel
+    f"{SYN}.2.1.1.5": "disk_status",      # diskStatus
+    f"{SYN}.2.1.1.6": "disk_temp",        # diskTemperature
+    f"{SYN}.2.1.1.13": "disk_health",     # diskHealthStatus (DSM 7.1 et plus)
+    f"{SYN}.3.1.1.2": "raid_name",        # SYNOLOGY-RAID-MIB raidName
+    f"{SYN}.3.1.1.3": "raid_status",      # raidStatus
+    f"{SYN}.3.1.1.4": "raid_free",        # raidFreeSize (octets)
+    f"{SYN}.3.1.1.5": "raid_total",       # raidTotalSize (octets)
+    f"{SYN}.5.1.1.2": "smart_dev",        # SYNOLOGY-SMART-MIB diskSMARTInfoDevName
+    f"{SYN}.5.1.1.4": "smart_attr",       # diskSMARTAttrId
+    f"{SYN}.5.1.1.8": "smart_raw",        # diskSMARTAttrRaw
+    "1.3.6.1.2.1.25.3.3.1.2": "cpu_load",     # HOST-RESOURCES-MIB hrProcessorLoad (%)
+    "1.3.6.1.2.1.25.2.3.1.3": "store_descr",  # hrStorageDescr (« /volume1 »)
+    "1.3.6.1.2.1.25.2.3.1.4": "store_units",  # hrStorageAllocationUnits
+    "1.3.6.1.2.1.25.2.3.1.5": "store_size",   # hrStorageSize
+    "1.3.6.1.2.1.25.2.3.1.6": "store_used",   # hrStorageUsed
+}
+ALLOWED_COMMANDS = {"snmpget", "snmpwalk"}
+# Ce que SNMP ne donne pas : affiché tel quel, jamais deviné
+NOT_IN_SNMP = {
+    "smart_tests": "non disponible via SNMP (historique et résultat des tests SMART)",
+    "scrubbing": "non disponible via SNMP (date du dernier nettoyage des données)",
+    "package_updates": "non disponible via SNMP (mises à jour des paquets)",
+}
 
-# Codes d'erreur DSM (documentation officielle de l'API Web)
-DSM_ERRORS = {
-    100: "erreur inconnue", 101: "paramètre invalide", 102: "API absente de ce DSM", 103: "méthode absente de ce DSM",
-    104: "version non prise en charge", 105: "permission refusée pour ce compte", 106: "session expirée",
-    107: "session interrompue (connexion en double)", 119: "session inconnue",
-}
-AUTH_ERRORS = {
-    400: "identifiant ou mot de passe refusé", 401: "compte désactivé", 402: "permission refusée",
-    403: "double authentification demandée : à retirer pour ce compte de service", 404: "double authentification refusée",
-    406: "double authentification imposée : à retirer pour ce compte de service", 407: "adresse bloquée (blocage automatique de DSM)",
-    408: "mot de passe expiré", 409: "mot de passe expiré", 410: "mot de passe à changer",
-}
-SESSION_LOST = {106, 107, 119}
+DISK_STATUS = {1: "normal", 2: "initialized", 3: "not_initialized", 4: "system_partition_failed", 5: "crashed"}
+DISK_HEALTH = {1: "normal", 2: "warning", 3: "critical", 4: "failing"}
+RAID_STATUS = {1: "normal", 2: "repairing", 3: "migrating", 4: "expanding", 5: "deleting", 6: "creating",
+               7: "syncing", 8: "parity_checking", 9: "assembling", 10: "canceling", 11: "degrade", 12: "crashed",
+               13: "data_scrubbing", 14: "deploying", 15: "undeploying", 16: "mount_cache", 17: "unmount_cache",
+               18: "expanding", 19: "converting", 20: "migrating", 21: "unknown"}
+UPGRADE = {1: True, 2: False}    # 3 connexion en cours, 4 hors ligne, 5 autre : inconnu
 
 
 class NasError(Exception):
     pass
 
 
-class ForbiddenCall(NasError):
-    """Appel hors de la liste blanche : refusé avant tout envoi."""
+class ForbiddenRequest(NasError):
+    """Commande ou OID hors liste blanche : refusé avant tout lancement."""
 
 
-class DsmError(NasError):
-    def __init__(self, api: str, code: int):
-        self.api, self.code = api, code
-        super().__init__(f"{api} : {DSM_ERRORS.get(code, 'erreur')} (code DSM {code})")
+def _norm(oid: str) -> str:
+    return oid.strip().lstrip(".")
 
 
-def reason(e: Exception) -> str:
-    """Raison lisible d'une information non disponible (jamais d'adresse)."""
-    if isinstance(e, DsmError):
-        if e.code == 105:
-            return "accès refusé au compte du module (code DSM 105) : réservé aux administrateurs sur ce DSM"
-        return f"{DSM_ERRORS.get(e.code, 'erreur')} (code DSM {e.code})"
-    return clean_text(str(e), 160) or e.__class__.__name__
+def check_request(command: str, oids: list[str]) -> None:
+    """Lève ForbiddenRequest si la requête n'est pas une lecture de la liste blanche."""
+    if command not in ALLOWED_COMMANDS:
+        raise ForbiddenRequest(f"commande SNMP refusée : {command}")
+    if not oids:
+        raise ForbiddenRequest("aucun OID demandé")
+    for oid in oids:
+        o = _norm(oid)
+        if not re.fullmatch(r"\d+(?:\.\d+)+", o):
+            raise ForbiddenRequest(f"OID invalide : {oid}")
+        if command == "snmpget" and o not in ALLOWED_OIDS:
+            raise ForbiddenRequest(f"OID refusé par la liste blanche : {o}")
+        if command == "snmpwalk" and o not in ALLOWED_TABLES:
+            raise ForbiddenRequest(f"table refusée par la liste blanche : {o}")
 
 
-def check_call(api: str, method: str, http_method: str, params: dict) -> None:
-    """Lève ForbiddenCall si l'appel n'est pas une lecture de la liste blanche."""
-    if (api, method) not in ALLOWED_CALLS:
-        raise ForbiddenCall(f"appel refusé par la liste blanche : {api} / {method}")
-    if method not in ("query", "login", "check") and WRITE_WORDS.search(method.replace("load_info", "").replace("get_", "")):
-        raise ForbiddenCall(f"méthode d'écriture refusée : {method}")
-    if http_method == "POST" and (api, method) not in POST_CALLS:
-        raise ForbiddenCall(f"requête POST refusée : {api} / {method}")
-    if http_method not in ("GET", "POST"):
-        raise ForbiddenCall(f"requête {http_method} refusée")
-    extra = set(params) - ALLOWED_PARAMS
-    if extra:
-        raise ForbiddenCall(f"paramètre refusé : {', '.join(sorted(extra))}")
+def allowed_answer(oid: str) -> bool:
+    o = _norm(oid)
+    return o in ALLOWED_OIDS or any(o.startswith(t + ".") for t in ALLOWED_TABLES)
+
+
+_LINE = re.compile(r"^\.?(\d+(?:\.\d+)+)\s+=\s+(.*)$")
+
+
+def parse_output(text: str) -> dict[str, str]:
+    """Sortie net-snmp (-On -OQ -Oe -Ot) -> {oid: valeur} ; valeurs absentes ignorées."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        m = _LINE.match(line.strip())
+        if not m:
+            continue
+        oid, val = m.group(1), m.group(2).strip()
+        if not allowed_answer(oid) or val.startswith(("No Such", "No more variables")):
+            continue
+        if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+            val = val[1:-1].replace('\\"', '"')
+        out[oid] = val
+    return out
+
+
+def snmp_reason(stderr: str) -> str:
+    s = (stderr or "").lower()
+    if "timeout" in s:
+        return "NAS injoignable en SNMP (délai dépassé : pare-feu UDP 161, adresse ou service SNMP)"
+    if "authentication failure" in s or "wrong digest" in s:
+        return "SNMP refusé : mot de passe d'authentification incorrect"
+    if "decryption error" in s:
+        return "SNMP refusé : mot de passe de chiffrement incorrect"
+    if "unknown user name" in s:
+        return "SNMP refusé : utilisateur SNMP inconnu du NAS"
+    if "unsupported security level" in s:
+        return "SNMP refusé : niveau de sécurité (SHA + AES attendus)"
+    return clean_text((stderr or "").strip().splitlines()[-1] if (stderr or "").strip() else "erreur SNMP", 160) or "erreur SNMP"
 
 
 class NasClient:
-    def __init__(self, base_url: str, username: str, password: str, verify_ssl: bool = False):
-        self.base = base_url.rstrip("/")
-        self.username = username
-        self.password = password
-        ctx = ssl.create_default_context()
-        if not verify_ssl:  # certificat auto-signé du NAS, réseau local
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-        self.opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-        self.sid = None
-        self.apis: dict = {}
+    def __init__(self, host: str, user: str, auth_password: str, priv_password: str, runner=None):
+        if not re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", host or ""):
+            raise NasError("adresse du NAS invalide (nom ou adresse, sans https:// ni port)")
+        for label, value in (("utilisateur SNMP", user), ("mot de passe SNMP", auth_password), ("mot de passe SNMP", priv_password)):
+            if not value or any(c in value for c in '"\\\n\r'):
+                raise NasError(f"{label} vide ou avec un caractère refusé (guillemet, barre oblique inverse, retour à la ligne)")
+        if len(auth_password) < 8 or len(priv_password) < 8:
+            raise NasError("mots de passe SNMP : 8 caractères au moins (exigence de SNMPv3)")
+        self.host = host
+        self.user = user
+        self.auth_password = auth_password
+        self.priv_password = priv_password
+        self.runner = runner or self._run
         self.last_read = 0.0
-        self.keys_logged = False
-        self.response_keys: dict[str, list[str]] = {}
+        self.conf_dir = None
 
     # -- transport (liste blanche) ------------------------------------------
-    def _send(self, http_method: str, path: str, params: dict):
-        data = None
-        url = f"{self.base}/webapi/{path}"
-        if http_method == "POST":
-            data = urllib.parse.urlencode(params).encode()
-        else:
-            url += "?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, data=data, method=http_method, headers={"Accept": "application/json"})
-        try:
-            with self.opener.open(req, timeout=TIMEOUT) as r:
-                return json.loads(r.read().decode("utf-8") or "null")
-        except urllib.error.HTTPError as e:
-            raise NasError(f"HTTP {e.code}") from None
-        except urllib.error.URLError as e:
-            raise NasError(f"NAS injoignable ({clean_text(e.reason, 80) or 'réseau'})") from None
-        except (TimeoutError, OSError):
-            raise NasError("NAS injoignable (délai dépassé)") from None
+    def _conf(self) -> str:
+        """Fichier snmp.conf temporaire (600) : les mots de passe ne passent jamais en argument."""
+        if self.conf_dir and os.path.isdir(self.conf_dir):
+            return self.conf_dir
+        d = tempfile.mkdtemp(prefix="home-relay-snmp-")
+        os.chmod(d, 0o700)
+        path = os.path.join(d, "snmp.conf")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("defVersion 3\ndefSecurityLevel authPriv\ndefAuthType SHA\ndefPrivType AES\n")
+            f.write(f'defSecurityName "{self.user}"\ndefAuthPassphrase "{self.auth_password}"\ndefPrivPassphrase "{self.priv_password}"\n')
+        self.conf_dir = d
+        return d
 
-    def _call(self, api: str, method: str, version: int, params: dict | None = None, http_method: str = "GET"):
+    def _run(self, command: str, oids: list[str]) -> tuple[int, str, str]:
+        exe = shutil.which(command)
+        if not exe:
+            raise NasError(f"outil {command} absent de l'image du module")
+        conf = self._conf()
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "SNMPCONFPATH": conf, "SNMP_PERSISTENT_DIR": conf, "MIBS": ""}
+        args = [exe, "-On", "-OQ", "-Oe", "-Ot", "-t", str(TIMEOUT_S), "-r", str(RETRIES), self.host, *oids]
+        p = subprocess.run(args, capture_output=True, text=True, timeout=PROCESS_TIMEOUT_S, env=env, check=False)
+        return p.returncode, p.stdout, p.stderr
+
+    def request(self, command: str, oids: list[str]) -> dict[str, str]:
         """Seul point de sortie vers le NAS : liste blanche d'abord."""
-        p = {"api": api, "version": str(version), "method": method, **(params or {})}
-        check_call(api, method, http_method, p)
-        path = "query.cgi" if api == "SYNO.API.Info" else self.apis.get(api, {}).get("path", "entry.cgi")
-        res = self._send(http_method, path, p)
-        if not isinstance(res, dict):
-            raise NasError(f"{api} : réponse inattendue")
-        if not res.get("success"):
-            code = int((res.get("error") or {}).get("code") or 100)
-            raise DsmError(api, code)
-        return res.get("data") or {}
-
-    def _version(self, api: str, preferred: int) -> int:
-        info = self.apis.get(api)
-        if not info:
-            return preferred
-        return max(int(info.get("minVersion", 1)), min(preferred, int(info.get("maxVersion", preferred))))
-
-    # -- session -------------------------------------------------------------
-    def discover(self):
-        if not self.apis:
-            data = self._call("SYNO.API.Info", "query", 1, {"query": ",".join(sorted({a for a, _ in ALLOWED_CALLS}))})
-            self.apis = data if isinstance(data, dict) else {}
-
-    def login(self):
-        self.discover()
+        check_request(command, oids)
         try:
-            data = self._call("SYNO.API.Auth", "login", self._version("SYNO.API.Auth", 6),
-                              {"account": self.username, "passwd": self.password, "session": SESSION, "format": "sid"},
-                              http_method="POST")
-        except DsmError as e:
-            raise NasError(f"connexion au NAS refusée : {AUTH_ERRORS.get(e.code, DSM_ERRORS.get(e.code, 'erreur'))} (code DSM {e.code})") from None
-        self.sid = data.get("sid")
-        if not self.sid:
-            raise NasError("connexion au NAS : pas de session reçue")
-
-    def get(self, api: str, method: str, preferred: int, params: dict | None = None):
-        """Lecture authentifiée ; reconnecte une fois si la session a expiré."""
-        check_call(api, method, "GET", {"api": api, "version": "1", "method": method, **(params or {}), "_sid": ""})
-        if not self.sid:
-            self.login()
-        for attempt in (1, 2):
-            try:
-                data = self._call(api, method, self._version(api, preferred), {**(params or {}), "_sid": self.sid})
-                if isinstance(data, dict):
-                    self.response_keys[f"{api}/{method}"] = sorted(data)[:40]
-                return data
-            except DsmError as e:
-                if e.code in SESSION_LOST and attempt == 1:
-                    self.sid = None
-                    self.login()
-                    continue
-                raise
-        raise NasError(f"{api} : session refusée")
+            code, out, err = self.runner(command, [_norm(o) for o in oids])
+        except subprocess.TimeoutExpired:
+            raise NasError("NAS injoignable en SNMP (délai dépassé)") from None
+        values = parse_output(out)
+        if code != 0 and not values:
+            raise NasError(snmp_reason(err))
+        return values
 
     def due(self, now: float | None = None) -> bool:
         return (now if now is not None else time.monotonic()) - self.last_read >= READ_EVERY_S or not self.last_read
 
     # -- lecture complète ------------------------------------------------------
     def read(self) -> dict:
-        """Toutes les lectures ; chacune peut échouer sans empêcher les autres.
-        Prochaine lecture dans 30 min même en cas d'échec (une connexion refusée
-        n'est pas répétée toutes les 5 min : pas de blocage automatique par DSM)."""
+        """Une requête GET pour les valeurs uniques, puis une marche par colonne.
+        Prochaine lecture dans 30 min même en cas d'échec."""
         self.last_read = time.monotonic()
-        self.discover()
-        if not self.sid:
-            self.login()
-        raw: dict = {}
+        values = self.request("snmpget", list(ALLOWED_OIDS))   # erreur ici = NAS injoignable : la source échoue
         errors: dict[str, str] = {}
-
-        def one(key, fn):
+        for table in ALLOWED_TABLES:
             try:
-                raw[key] = fn()
-            except ForbiddenCall:
-                raise
+                values.update(self.request("snmpwalk", [table]))
             except NasError as e:
-                raw[key] = None
-                errors[key] = reason(e)
-
-        one("system", lambda: self.get("SYNO.Core.System", "info", 3))
-        one("utilization", lambda: self.get("SYNO.Core.System.Utilization", "get", 1))
-        one("storage", lambda: self.get("SYNO.Storage.CGI.Storage", "load_info", 1))
-        one("dsm_update", lambda: self.get("SYNO.Core.Upgrade.Server", "check", 1))
-        one("packages", lambda: self.get("SYNO.Core.Package", "list", 2, {"additional": json.dumps(["status"])}))
-        one("package_updates", lambda: self.get("SYNO.Core.Package.Server", "list", 2, {"blforcereload": "false"}))
-
-        smart: dict = {}
-        disks = ((raw.get("storage") or {}).get("disks") or []) if isinstance(raw.get("storage"), dict) else []
-        for d in disks[:12]:
-            dev = d.get("device") or (f"/dev/{d['id']}" if d.get("id") else None)
-            if not dev or not re.fullmatch(r"/dev/[a-z0-9]{2,12}", str(dev)):
-                continue
-            entry: dict = {}
-            for key, method in (("health", "get_health_info"), ("info", "get_smart_info")):
-                try:
-                    entry[key] = self.get("SYNO.Storage.CGI.Smart", method, 1, {"device": dev})
-                except NasError as e:
-                    entry[key] = None
-                    errors.setdefault("smart", reason(e))
-            smart[str(d.get("id") or dev)] = entry
-        raw["smart"] = smart
-        return {"raw": raw, "errors": errors}
+                errors.setdefault(ALLOWED_TABLES[table], str(e))
+        return {"values": values, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
 # Mise en forme (sans numéro de série ni adresse)
 # ---------------------------------------------------------------------------
 
-def _num(v):
-    if v is None or v == "" or isinstance(v, bool):
-        return None
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return None
-    return x if x == x and abs(x) != float("inf") else None
+def _int(v):
+    m = re.match(r"\s*(-?\d+)", str(v)) if v is not None else None
+    return int(m.group(1)) if m else None
 
 
-def _pick(d: dict, *keys):
-    for k in keys:
-        if isinstance(d, dict) and d.get(k) not in (None, ""):
-            return d[k]
-    return None
+def _col(values: dict, name: str) -> dict[str, str]:
+    """{index: valeur} d'une colonne de table."""
+    base = next(k for k, v in ALLOWED_TABLES.items() if v == name)
+    return {oid[len(base) + 1:]: v for oid, v in values.items() if oid.startswith(base + ".")}
 
 
-def _iso(v):
-    """Date DSM (horodatage en secondes, ou texte « 2026/11/01 02:00:00 ») -> ISO, sinon None."""
-    n = _num(v)
-    if n and n > 1e9:
-        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(n / 1000 if n > 1e12 else n))
-    if isinstance(v, str):
-        m = re.match(r"^(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?", v)
-        if m:
-            y, mo, d, h, mi, s = (int(x or 0) for x in m.groups())
-            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.mktime((y, mo, d, h, mi, s, 0, 0, -1))))
-    return None
+def _scalar(values: dict, name: str):
+    oid = next(k for k, v in ALLOWED_OIDS.items() if v == name)
+    return values.get(oid)
 
 
-def _uptime_h(v):
-    if isinstance(v, str) and re.fullmatch(r"\d+:\d{2}:\d{2}", v):
-        h, m, s = (int(x) for x in v.split(":"))
-        return round(h + m / 60, 1)
-    n = _num(v)
-    return round(n / 3600, 1) if n is not None else None
+def _slot(disk_id: str | None, index: str, n: int) -> str:
+    m = re.search(r"(\d+)\s*$", disk_id or "")
+    return f"Disque {m.group(1)}" if m else f"Disque {n}"
 
 
-def _status(v):
-    return clean_text(v, 30) if isinstance(v, str) else None
-
-
-def _vtuple(v: str):
-    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
-
-
-def _slot(d: dict, i: int) -> str:
-    n = _pick(d, "num_id", "slot_id")
-    if n is not None and _num(n) is not None:
-        return f"Disque {int(_num(n))}"
-    m = re.search(r"(\d+)$", str(d.get("id") or ""))
-    return f"Disque {m.group(1)}" if m else f"Disque {i + 1}"
-
-
-def _power_on_hours(info) -> float | None:
-    rows = (info or {}).get("smartInfo") or (info or {}).get("smart_info") or []
-    for r in rows if isinstance(rows, list) else []:
-        if str(r.get("id")) == "9" or "power_on" in str(r.get("name", "")).lower():
-            raw = re.match(r"\d+", str(_pick(r, "raw", "raw_value", "rawValue") or ""))
-            return int(raw.group(0)) if raw else None
-    return None
-
-
-def _health(health) -> dict:
-    h = (health or {}).get("healthInfo") or health or {}
-    ov = h.get("overview") or h
-    last = _pick(h, "last_test", "smart_test") or {}
-    return {
-        "test_result": _status(_pick(last, "result", "status") or _pick(ov, "smart_test_result", "last_test_result", "smart_test")),
-        "test_type": _status(_pick(last, "type") or _pick(ov, "smart_test_type", "last_test_type")),
-        "test_at": _iso(_pick(last, "time", "date") or _pick(ov, "smart_test_time", "last_test_time")),
-        "ihm_status": _status(_pick(ov, "ihm", "ihm_status", "ihm_health")),
-        "smart_status": _status(_pick(ov, "smart", "smart_status")),
-    }
+def _smart_hours(values: dict) -> dict[int, int]:
+    """Heures de fonctionnement (attribut SMART 9) par numéro de disque (« sata1 » -> 1, « sda » -> 1)."""
+    devs, attrs, raws = _col(values, "smart_dev"), _col(values, "smart_attr"), _col(values, "smart_raw")
+    out: dict[int, int] = {}
+    for idx, attr in attrs.items():
+        if _int(attr) != 9:
+            continue
+        dev = (devs.get(idx) or "").strip().lower()
+        m = re.search(r"(\d+)$", dev)
+        n = int(m.group(1)) if m else (ord(dev[-1]) - ord("a") + 1 if re.fullmatch(r"sd[a-z]", dev) else None)
+        raw = _int(raws.get(idx))
+        if n and raw is not None:
+            out[n] = raw
+    return out
 
 
 def map_nas(result: dict) -> dict:
-    raw, errors = result.get("raw") or {}, dict(result.get("errors") or {})
-    sysinfo = raw.get("system") if isinstance(raw.get("system"), dict) else {}
-    util = raw.get("utilization") if isinstance(raw.get("utilization"), dict) else {}
-    storage = raw.get("storage") if isinstance(raw.get("storage"), dict) else {}
-    smart = raw.get("smart") or {}
+    v, errors = result.get("values") or {}, dict(result.get("errors") or {})
+    unavailable: dict[str, str] = {}
 
-    cpu = util.get("cpu") or {}
-    cpu_pct = None
-    if cpu:
-        parts = [_num(cpu.get(k)) for k in ("user_load", "system_load", "other_load")]
-        cpu_pct = min(100.0, sum(p for p in parts if p is not None)) if any(p is not None for p in parts) else None
-    ram_pct = _num((util.get("memory") or {}).get("real_usage"))
+    status = _int(_scalar(v, "system_status"))
+    upgrade = _int(_scalar(v, "upgrade"))
+    uptime = _int(_scalar(v, "uptime"))
 
+    # Mémoire : UCD-SNMP-MIB (sans les tampons ni le cache, comme DSM)
+    total, avail, buf, cached = (_int(_scalar(v, k)) for k in ("mem_total", "mem_avail", "mem_buffer", "mem_cached"))
+    ram_pct = None
+    if total:
+        used = total - (avail or 0) - (buf or 0) - (cached or 0)
+        ram_pct = round(max(0.0, min(100.0, 100 * used / total)), 1)
+    loads = [x for x in (_int(x) for x in _col(v, "cpu_load").values()) if x is not None]
+    cpu_pct = round(sum(loads) / len(loads), 1) if loads else None
+
+    # Volumes : HOST-RESOURCES-MIB hrStorage « /volumeN »
+    descr, units, size, used_ = (_col(v, k) for k in ("store_descr", "store_units", "store_size", "store_used"))
     volumes = []
-    for i, v in enumerate(storage.get("volumes") or []):
-        m = re.search(r"(\d+)$", str(v.get("vol_path") or v.get("id") or ""))
-        size = v.get("size") or {}
-        volumes.append({"name": f"Volume {m.group(1) if m else i + 1}", "status": _status(v.get("status")),
-                        "used_bytes": _num(size.get("used")), "total_bytes": _num(size.get("total"))})
+    for idx, d in sorted(descr.items(), key=lambda x: x[1]):
+        m = re.fullmatch(r"/volume(\d+)", d.strip())
+        u, s, us = _int(units.get(idx)), _int(size.get(idx)), _int(used_.get(idx))
+        if m and u and s is not None:
+            volumes.append({"name": f"Volume {m.group(1)}", "status": None,
+                            "used_bytes": us * u if us is not None else None, "total_bytes": s * u})
 
+    # Groupes de stockage / RAID : SYNOLOGY-RAID-MIB
+    names, rstat, rfree, rtotal = (_col(v, k) for k in ("raid_name", "raid_status", "raid_free", "raid_total"))
     pools = []
-    for i, p in enumerate(storage.get("storagePools") or storage.get("storage_pools") or []):
-        m = re.search(r"(\d+)$", str(p.get("num_id") or p.get("id") or ""))
-        scrub = p.get("scrubbing") if isinstance(p.get("scrubbing"), dict) else {}
-        pools.append({
-            "name": f"Groupe de stockage {m.group(1) if m else i + 1}", "status": _status(p.get("status")),
-            "raid": _status(_pick(p, "device_type", "raidType", "raid_type")),
-            "scrub_status": _status(_pick(scrub, "status") or _pick(p, "scrubbingStatus", "scrubbing_status")),
-            "scrub_last_at": _iso(_pick(scrub, "last_done_time", "last_time") or _pick(p, "last_scrubbing_time", "last_done_time")),
-        })
+    for idx in sorted(names, key=lambda x: _int(x) or 0):
+        name = clean_text(names[idx], 40) or f"Groupe {idx}"
+        name = re.sub(r"^Storage Pool", "Groupe de stockage", name)
+        pools.append({"name": name, "status": RAID_STATUS.get(_int(rstat.get(idx)), None),
+                      "free_bytes": _int(rfree.get(idx)), "total_bytes": _int(rtotal.get(idx))})
 
+    # Disques : SYNOLOGY-DISK-MIB (+ heures SMART)
+    ids, models, dstat, temps, health = (_col(v, k) for k in ("disk_id", "disk_model", "disk_status", "disk_temp", "disk_health"))
+    hours = _smart_hours(v)
     disks = []
-    for i, d in enumerate((storage.get("disks") or [])[:40]):
-        s = smart.get(str(d.get("id") or "")) or {}
-        h = _health(s.get("health"))
+    for n, idx in enumerate(sorted(ids or models, key=lambda x: _int(x) or 0), 1):
+        slot = _slot(ids.get(idx), idx, n)
+        num = _int(re.sub(r"\D", "", slot)) or n
         disks.append({
-            "slot": _slot(d, i), "model": clean_text(d.get("model"), 60), "vendor": clean_text(d.get("vendor"), 40),
-            "size_bytes": _num(d.get("size_total")), "temp_c": _num(d.get("temp")),
-            "status": _status(_pick(d, "overview_status", "status")),
-            "smart_status": h["smart_status"] or _status(d.get("smart_status")),
-            "power_on_hours": _power_on_hours(s.get("info")),
-            "test_type": h["test_type"], "test_result": h["test_result"], "test_at": h["test_at"], "ihm_status": h["ihm_status"],
+            "slot": slot, "model": clean_text(models.get(idx), 60),
+            "temp_c": _int(temps.get(idx)), "status": DISK_STATUS.get(_int(dstat.get(idx))),
+            "health_status": DISK_HEALTH.get(_int(health.get(idx))),
+            "power_on_hours": hours.get(num),
         })
-    if disks and all(x["power_on_hours"] is None for x in disks):
-        errors.setdefault("smart", "heures de fonctionnement absentes de la réponse de DSM")
-    if disks and all(x["test_result"] is None for x in disks):
-        errors.setdefault("smart", "résultat des tests SMART absent de la réponse de DSM")
-    if pools and all(p["scrub_last_at"] is None for p in pools):
-        errors.setdefault("scrubbing", "date du dernier nettoyage des données absente de la réponse de DSM")
 
-    upd = raw.get("dsm_update") if isinstance(raw.get("dsm_update"), dict) else None
-    dsm_update = None
-    if upd is not None:
-        u = upd.get("update") if isinstance(upd.get("update"), dict) else upd
-        avail = u.get("available")
-        dsm_update = {"available": avail if isinstance(avail, bool) else None, "version": clean_text(_pick(u, "version", "update_version"), 60)}
+    if disks and all(d["health_status"] is None for d in disks):
+        unavailable["disk_health"] = "état de santé des disques absent de la MIB de ce NAS"
+    if disks and all(d["power_on_hours"] is None for d in disks):
+        unavailable["smart"] = "heures de fonctionnement absentes (SYNOLOGY-SMART-MIB)"
+    if ram_pct is None:
+        unavailable["memory"] = "mémoire absente (UCD-SNMP-MIB)"
+    for key, reason in errors.items():
+        if key.startswith("disk_") and not disks:
+            unavailable["storage"] = reason
+        elif key.startswith("raid_") and not pools:
+            unavailable["raid"] = reason
+        elif key.startswith("store_") and not volumes:
+            unavailable["volumes"] = reason
+    unavailable.update(NOT_IN_SNMP)
 
-    installed = raw.get("packages") if isinstance(raw.get("packages"), dict) else None
-    server = raw.get("package_updates") if isinstance(raw.get("package_updates"), dict) else None
-    packages, n_installed = [], None
-    if installed is not None:
-        inst = installed.get("packages") or []
-        n_installed = len(inst)
-        latest = {}
-        for p in (server or {}).get("packages") or []:
-            if p.get("id") and p.get("version"):
-                latest[p["id"]] = str(p["version"])
-        for p in inst:
-            cur, new = str(p.get("version") or ""), latest.get(p.get("id"))
-            if new and _vtuple(new) > _vtuple(cur):
-                packages.append({"name": clean_text(_pick(p, "name", "id"), 60) or "paquet",
-                                 "installed": clean_text(cur, 40), "latest": clean_text(new, 40)})
-
-    temp = _num(_pick(sysinfo, "sys_temp", "temperature"))
-    warn = _pick(sysinfo, "sys_tempwarn", "temperature_warn")
     return {
-        "model": clean_text(sysinfo.get("model"), 40),
-        "dsm_version": clean_text(_pick(sysinfo, "firmware_ver", "version_string"), 60),
-        "dsm_update": dsm_update,
-        "system_status": _status(_pick(sysinfo, "sys_status", "status")),
-        "temperature_c": temp,
-        "temperature_warning": warn if isinstance(warn, bool) else None,
+        "model": clean_text(_scalar(v, "model"), 40),
+        "dsm_version": clean_text(_scalar(v, "version"), 60),
+        "dsm_update": {"available": UPGRADE.get(upgrade), "version": None} if upgrade is not None else None,
+        "system_status": {1: "normal", 2: "failed"}.get(status),
+        "temperature_c": _int(_scalar(v, "temperature")),
         "cpu_pct": cpu_pct,
         "ram_pct": ram_pct,
-        "uptime_h": _uptime_h(_pick(sysinfo, "up_time", "uptime")),
+        "uptime_h": round(uptime / 360000, 1) if uptime is not None else None,
         "volumes": volumes,
         "pools": pools,
-        "disks": disks,
-        "packages": packages[:200],
-        "packages_installed": n_installed,
-        "unavailable": {k: v for k, v in errors.items()},
+        "disks": disks[:40],
+        "unavailable": unavailable,
     }
