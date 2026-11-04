@@ -18,7 +18,7 @@ Assistant.
 | `shared_secret` | Secret partagé (40 caractères), identique au secret `RELAY_SHARED_SECRET` de Supabase. |
 | `interval_minutes` | Intervalle entre deux envois (5 par défaut). |
 | `climate_entities` | Facultatif. Entités lues pour la température et l'humidité. Vide = toutes les `climate.*`. |
-| `nas_url` | Facultatif. Adresse locale du NAS Synology, `https://<adresse du NAS>:5001` (sans `/` final). Vide = NAS non lu. |
+| `nas_url` | Facultatif. Adresse locale du NAS Synology, `https://<adresse du NAS>:<port HTTPS de DSM>` (sans `/` final), par exemple `https://<adresse du NAS>:3041` ; le port HTTPS est dans DSM → Panneau de configuration → Portail de connexion. Vide = NAS non lu. |
 | `nas_username` / `nas_password` | Compte NAS **dédié, non administrateur** (ex. `home-relay`), voir « NAS Synology ». |
 | `nas_verify_ssl` | Désactivé par défaut : le NAS a un certificat auto-signé (réseau local uniquement). |
 | `alarm_entities` | Facultatif. Entités dont l'**état** est lu (lecture seule). Vide = les `alarm_control_panel.*` activées, sinon les entités Somfy restantes (voir plus bas). |

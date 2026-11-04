@@ -33,7 +33,7 @@ configuration:
     description: Entity IDs whose state is read (read only). Empty = all enabled alarm_control_panel.* entities, otherwise the remaining Somfy entities (state only).
   nas_url:
     name: NAS URL (optional)
-    description: Local address of the Synology NAS, e.g. https://<NAS address>:5001 (no trailing slash). Empty = NAS not read.
+    description: Local address of the Synology NAS, e.g. https://<NAS address>:3041 (DSM HTTPS port, see Control Panel → Login Portal) (no trailing slash). Empty = NAS not read.
   nas_username:
     name: NAS username
     description: Dedicated NAS account (e.g. home-relay), NOT an administrator. Read only.

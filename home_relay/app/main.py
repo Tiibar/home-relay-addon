@@ -37,7 +37,7 @@ def load_options(path: str = OPTIONS) -> dict:
     if missing:
         raise SystemExit(f"Configuration incomplète : {', '.join(missing)}")
     if opts.get("nas_url") and not str(opts["nas_url"]).startswith("https://"):
-        raise SystemExit("L'adresse du NAS doit commencer par https:// (port 5001 en général).")
+        raise SystemExit("L'adresse du NAS doit commencer par https:// (port HTTPS de DSM : 3041 à la maison, voir Portail de connexion).")
     if opts.get("nas_url") and not (opts.get("nas_username") and opts.get("nas_password")):
         raise SystemExit("NAS : utilisateur et mot de passe obligatoires quand l'adresse du NAS est renseignée.")
     if len(opts["shared_secret"]) < 32:
