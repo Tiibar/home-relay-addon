@@ -1,7 +1,8 @@
-"""Home Relay : relais en lecture seule UniFi + Home Assistant -> Supabase.
+"""Home Relay : relais en lecture seule UniFi + Home Assistant + NAS Synology -> Supabase.
 
 Toutes les N minutes :
-  1. lit la passerelle UniFi locale (GET) et Home Assistant (GET) ;
+  1. lit la passerelle UniFi locale (GET) et Home Assistant (GET), et toutes
+     les 30 min le NAS Synology (API Web de DSM, liste blanche de lectures) ;
   2. construit un instantané sans adresse IP, sans adresse MAC en clair
      (HMAC-SHA256 avec le secret), sans site visité ni DNS ;
   3. l'envoie à la fonction Supabase (file d'attente si échec).
@@ -18,10 +19,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import homeassistant
+import nas
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.0.11"
+VERSION = "1.1.0"
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -34,6 +36,10 @@ def load_options(path: str = OPTIONS) -> dict:
     missing = [k for k in ("unifi_url", "unifi_username", "unifi_password", "supabase_function_url", "shared_secret") if not opts.get(k)]
     if missing:
         raise SystemExit(f"Configuration incomplète : {', '.join(missing)}")
+    if opts.get("nas_url") and not str(opts["nas_url"]).startswith("https://"):
+        raise SystemExit("L'adresse du NAS doit commencer par https:// (port 5001 en général).")
+    if opts.get("nas_url") and not (opts.get("nas_username") and opts.get("nas_password")):
+        raise SystemExit("NAS : utilisateur et mot de passe obligatoires quand l'adresse du NAS est renseignée.")
     if len(opts["shared_secret"]) < 32:
         raise SystemExit("Le secret partagé doit faire au moins 32 caractères (40 conseillés).")
     if not str(opts["supabase_function_url"]).startswith("https://"):
@@ -45,7 +51,14 @@ def short(e: Exception) -> str:
     return str(e)[:180] or e.__class__.__name__
 
 
-def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
+def make_nas_client(opts: dict):
+    """Client NAS, ou None si l'adresse du NAS n'est pas renseignée (lecture désactivée)."""
+    if not opts.get("nas_url"):
+        return None
+    return nas.NasClient(opts["nas_url"], opts["nas_username"], opts["nas_password"], bool(opts.get("nas_verify_ssl")))
+
+
+def collect(opts: dict, client: "unifi.UnifiClient", nas_client=None) -> dict:
     secret = opts["shared_secret"]
     sources: dict[str, str] = {}
     raw: dict = {}
@@ -73,6 +86,16 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
     read("unifi_client_events", lambda: client.log_events("CLIENT_DEVICES", unifi.CLIENT_EVENTS_BACKFILL_DAYS))
     read("unifi_wan_events", lambda: client.log_events("INTERNET_AND_WAN", unifi.WAN_EVENTS_BACKFILL_DAYS))
     read("home_assistant", homeassistant.read)
+
+    nas_part = None
+    if nas_client is None:
+        sources["nas"] = "désactivée : adresse du NAS non renseignée"
+    elif nas_client.due():
+        read("nas", nas_client.read)
+        if raw.get("nas") is not None:
+            nas_part = nas.map_nas(raw["nas"])
+            missing = nas_part["unavailable"]
+            sources["nas"] = f"ok ({len(missing)} information(s) non disponible(s))" if missing else "ok"
 
     devices = raw.get("unifi_devices") or []
     unifi_part = None
@@ -105,6 +128,7 @@ def collect(opts: dict, client: "unifi.UnifiClient") -> dict:
         "sources": sources,
         "unifi": unifi_part,
         "ha": ha_part,
+        **({"nas": nas_part} if nas_part is not None else {}),
     }
 
 
@@ -155,12 +179,20 @@ def main():
                                opts.get("unifi_site") or "default", bool(opts.get("unifi_verify_ssl")))
     queue = Queue(QUEUE)
     send = make_sender(opts["supabase_function_url"], opts["shared_secret"])
+    nas_client = make_nas_client(opts)
     log.info("Home Relay %s démarré : lecture seule, envoi toutes les %d min (heure : %s).", VERSION, interval // 60, tz_name)
 
     while True:
         started = time.monotonic()
         try:
-            payload = collect(opts, client)
+            payload = collect(opts, client, nas_client)
+            if payload.get("nas"):
+                for k, v in payload["nas"]["unavailable"].items():
+                    log.info("NAS : %s non disponible : %s", k, v)
+                if nas_client and not nas_client.keys_logged:
+                    # une fois : les champs reçus de DSM (noms seulement, jamais les valeurs), pour ajuster le module
+                    log.info("NAS : champs reçus de DSM : %s", json.dumps(nas_client.response_keys, ensure_ascii=False)[:2000])
+                    nas_client.keys_logged = True
             failed = {k: v for k, v in payload["sources"].items() if not v.startswith("ok")}
             n_clients = len((payload.get("unifi") or {}).get("clients") or [])
             log.info("Lu : %d clients, %d équipements UniFi%s.", n_clients,

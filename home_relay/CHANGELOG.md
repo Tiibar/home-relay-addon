@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0
+
+- **NAS Synology** (facultatif) : toutes les 30 min, lecture seule par l'API
+  Web officielle de DSM, avec un compte NAS dédié **non administrateur** :
+  état, version de DSM et mise à jour disponible, température, processeur et
+  mémoire, volumes (utilisé / total), RAID, disques (modèle, taille,
+  température, état, heures de fonctionnement, dernier test SMART, santé
+  IronWolf), dernier nettoyage des données, paquets à mettre à jour.
+- Liste blanche stricte de couples (API, méthode) de lecture (`nas.ALLOWED_CALLS`,
+  testée) ; tout autre appel est refusé avant l'envoi. Seule requête POST : la
+  connexion (mot de passe dans le corps, jamais dans l'adresse).
+- Une information que le compte ne peut pas lire est envoyée « non
+  disponible » avec le code d'erreur de DSM (105 = permission refusée) ; le
+  journal du module la liste à chaque lecture.
+- Nouvelles options : `nas_url`, `nas_username`, `nas_password`,
+  `nas_verify_ssl` (désactivée par défaut). Adresse vide = NAS non lu.
+
 ## 1.0.11
 
 - Parc : numéro de série des appareils hors ligne (registre de Home

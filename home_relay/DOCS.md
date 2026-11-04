@@ -1,7 +1,7 @@
 # Home Relay
 
 Relais **en lecture seule** : toutes les 5 minutes, il lit la passerelle UniFi
-locale et Home Assistant, puis envoie un résumé au tableau de bord de la maison
+locale et Home Assistant (et toutes les 30 minutes le NAS Synology), puis envoie un résumé au tableau de bord de la maison
 (fonction Supabase `ingest-home`). **Il ne commande rien** : aucun
 redémarrage, aucun changement de configuration, aucun appel de service Home
 Assistant.
@@ -18,6 +18,9 @@ Assistant.
 | `shared_secret` | Secret partagé (40 caractères), identique au secret `RELAY_SHARED_SECRET` de Supabase. |
 | `interval_minutes` | Intervalle entre deux envois (5 par défaut). |
 | `climate_entities` | Facultatif. Entités lues pour la température et l'humidité. Vide = toutes les `climate.*`. |
+| `nas_url` | Facultatif. Adresse locale du NAS Synology, `https://<adresse du NAS>:5001` (sans `/` final). Vide = NAS non lu. |
+| `nas_username` / `nas_password` | Compte NAS **dédié, non administrateur** (ex. `home-relay`), voir « NAS Synology ». |
+| `nas_verify_ssl` | Désactivé par défaut : le NAS a un certificat auto-signé (réseau local uniquement). |
 | `alarm_entities` | Facultatif. Entités dont l'**état** est lu (lecture seule). Vide = les `alarm_control_panel.*` activées, sinon les entités Somfy restantes (voir plus bas). |
 
 Aucune valeur n'est écrite dans ce dépôt public : tout passe par cette
@@ -103,6 +106,44 @@ voir `hass_ws.READ_ONLY`) :
 - exclus : les téléphones et tablettes de l'application Home Assistant
   (Companion App, intégration `mobile_app`), qui ne sont pas des appareils de
   la maison.
+
+### NAS Synology (module ≥ 1.1.0)
+
+Toutes les 30 minutes, par l'**API Web officielle de DSM** (`/webapi/…`),
+avec un compte NAS dédié **non administrateur**. Le client du module n'autorise
+que les couples (API, méthode) de **lecture** de la liste blanche
+`nas.ALLOWED_CALLS` (testée) ; tout autre appel, tout mot d'écriture dans le
+nom de la méthode (`set`, `create`, `delete`, `start`, `install`…) et tout
+paramètre inconnu sont refusés **avant l'envoi**. Seule requête POST : la
+connexion (le mot de passe est dans le corps, jamais dans l'adresse). La
+session est gardée (pas une connexion toutes les 30 min) ; une connexion
+refusée n'est retentée que 30 min plus tard (pas de blocage automatique).
+
+| Donnée | API / méthode | Champs gardés |
+|---|---|---|
+| Chemins des API | `SYNO.API.Info` / `query` (sans session) | chemin, versions |
+| Session | `SYNO.API.Auth` / `login` (POST) | identifiant de session (jamais envoyé) |
+| Système | `SYNO.Core.System` / `info` | modèle, version de DSM, température, alerte de température, état, durée de fonctionnement |
+| Charge | `SYNO.Core.System.Utilization` / `get` | processeur (%), mémoire (%) |
+| Stockage | `SYNO.Storage.CGI.Storage` / `load_info` | volumes (état, utilisé, total), groupes de stockage (état, type de RAID, nettoyage des données), disques (emplacement, modèle, fabricant, taille, température, état) |
+| SMART | `SYNO.Storage.CGI.Smart` / `get_health_info`, `get_smart_info` | dernier test (type, résultat, date), santé IronWolf, heures de fonctionnement (attribut 9) |
+| Mise à jour de DSM | `SYNO.Core.Upgrade.Server` / `check` | disponible ou non, version (demande au NAS s'il existe une version plus récente : rien n'est téléchargé ni installé) |
+| Paquets | `SYNO.Core.Package` / `list`, `SYNO.Core.Package.Server` / `list` | nom et version des paquets qui ont une mise à jour, nombre de paquets installés |
+
+**Jamais envoyé** : numéros de série, adresses IP ou MAC, noms d'utilisateur,
+noms des dossiers partagés, contenu des fichiers.
+
+**Information non disponible** : si DSM refuse une lecture au compte du module
+(souvent `code DSM 105` : permission refusée, ces API étant réservées aux
+administrateurs sur DSM 7.1), elle est envoyée « non disponible » avec la
+raison, et le journal du module l'écrit à chaque lecture
+(`NAS : storage non disponible : …`). À la première lecture, le journal liste
+aussi les **noms** des champs reçus de DSM (jamais leurs valeurs), pour ajuster
+le module si un champ porte un autre nom sur ce NAS.
+
+Format des réponses établi d'après la documentation de l'API Web de Synology
+et des projets communautaires, **sans accès au NAS de la maison** : les champs
+manquants sont signalés « non disponible » plutôt que devinés.
 
 ### Limites connues
 

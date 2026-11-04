@@ -1,7 +1,7 @@
 # Home Relay — dépôt d'add-ons Home Assistant
 
-Add-on **en lecture seule** qui relaie l'état de la passerelle UniFi locale et
-de Home Assistant vers le tableau de bord de la maison (fonction Supabase).
+Add-on **en lecture seule** qui relaie l'état de la passerelle UniFi locale, de
+Home Assistant et (facultatif) du NAS Synology vers le tableau de bord de la maison (fonction Supabase).
 Il ne commande rien.
 
 ## Installation
@@ -20,6 +20,8 @@ Documentation complète (options, vie privée, données lues, limites) :
   passe par la configuration de l'add-on (contrôlé par la CI).
 - Uniquement des lectures (GET), sauf deux requêtes en liste blanche stricte :
   la connexion, et la recherche des menaces dans le journal (compte View Only).
+- NAS Synology : liste blanche stricte de couples (API, méthode) de lecture de
+  l'API Web de DSM ; seule requête POST : la connexion ; compte non administrateur.
 - Adresses MAC hachées (HMAC-SHA256) avant envoi ; aucune adresse IP envoyée ;
   jamais de sites visités ni de DNS.
 
