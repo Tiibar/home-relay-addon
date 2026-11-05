@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "home_relay", "app"))
@@ -209,8 +210,22 @@ class Mapping(unittest.TestCase):
         self.assertTrue(c.due())
         c.read()
         self.assertFalse(c.due())
-        self.assertTrue(c.due(now=c.last_read + nas.READ_EVERY_S))
+        self.assertTrue(c.due(now=c.last_read + nas.READ_EVERY_S + 1))
         self.assertIsNone(main.make_nas_client({"nas_host": ""}))
+
+    def test_unreachable_nas_is_retried_at_next_cycle(self):
+        # après une coupure de courant, le NAS redémarre plus lentement que Home Assistant
+        c, _ = client(fail="Timeout: No Response from nas.example.")
+        with self.assertRaises(nas.NasError):
+            c.read()
+        self.assertFalse(c.due(now=c.last_read + nas.READ_EVERY_S - nas.RETRY_UNREACHABLE_S - 1))
+        self.assertTrue(c.due(now=c.last_read + nas.READ_EVERY_S + 1))
+        self.assertTrue(c.due(now=time.monotonic() + nas.RETRY_UNREACHABLE_S))
+        # mot de passe refusé : pas d'essai toutes les 5 min
+        c, _ = client(fail="snmpget: Authentication failure (incorrect password, community or key)")
+        with self.assertRaises(nas.NasError):
+            c.read()
+        self.assertFalse(c.due(now=time.monotonic() + nas.RETRY_UNREACHABLE_S))
 
 
 if __name__ == "__main__":

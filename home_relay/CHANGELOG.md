@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.3
+
+- NAS : s'il ne répond pas (il redémarre, par exemple après une coupure de
+  courant, plus lentement que Home Assistant), nouvel essai au cycle suivant
+  (5 min) au lieu de 30 min. Mot de passe ou utilisateur SNMP refusé : 30 min.
+  Au démarrage du module, la lecture du NAS est immédiate.
+
 ## 1.2.2
 
 - Chaque envoi indique l'heure de démarrage du module (`started_at`). Après

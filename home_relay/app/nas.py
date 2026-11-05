@@ -29,6 +29,9 @@ import time
 from privacy import clean_text
 
 READ_EVERY_S = 30 * 60          # le NAS change lentement : une lecture toutes les 30 min
+# NAS injoignable (il redémarre, par ex. après une coupure de courant) : nouvel essai au cycle
+# suivant, sans attendre 30 min. Mot de passe ou utilisateur refusé : 30 min.
+RETRY_UNREACHABLE_S = 5 * 60
 TIMEOUT_S = 5                    # par requête SNMP (net-snmp -t)
 RETRIES = 1
 PROCESS_TIMEOUT_S = 60
@@ -217,9 +220,14 @@ class NasClient:
     # -- lecture complète ------------------------------------------------------
     def read(self) -> dict:
         """Une requête GET pour les valeurs uniques, puis une marche par colonne.
-        Prochaine lecture dans 30 min même en cas d'échec."""
+        Prochaine lecture dans 30 min ; si le NAS est injoignable (il redémarre), dans 5 min."""
         self.last_read = time.monotonic()
-        values = self.request("snmpget", list(ALLOWED_OIDS))   # erreur ici = NAS injoignable : la source échoue
+        try:
+            values = self.request("snmpget", list(ALLOWED_OIDS))   # erreur ici = NAS injoignable : la source échoue
+        except NasError as e:
+            if "injoignable" in str(e):
+                self.last_read -= READ_EVERY_S - RETRY_UNREACHABLE_S
+            raise
         errors: dict[str, str] = {}
         for table in ALLOWED_TABLES:
             try:
