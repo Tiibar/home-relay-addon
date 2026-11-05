@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.4
+
+- Appareils : deux booléens par appareil, jamais l'adresse elle-même —
+  `local_mac` (adresse MAC administrée localement : interface virtuelle,
+  liaison mesh, adresse privée) et `has_ip` (une adresse IP lui est attribuée).
+  L'application affiche alors « adresse virtuelle probable, sans activité »
+  au lieu d'« appareil inconnu » quand il n'a ni IP ni trafic.
+
 ## 1.2.3
 
 - NAS : s'il ne répond pas (il redémarre, par exemple après une coupure de

@@ -69,7 +69,7 @@ modifier sur la passerelle.
 | Donnée | Requête (GET) | Champs gardés |
 |---|---|---|
 | Passerelle, switch, bornes | `stat/device` | nom, modèle, type, état, firmware, mise à jour dispo, uptime, nombre de clients, satisfaction ; par radio : bande, canal, occupation du canal (`cu_total`), satisfaction, clients ; lien montant : câble/sans fil (mesh), équipement parent, signal, débit |
-| Clients connectés | `stat/sta` | nom, réseau (VLAN), borne ou port du switch, signal, compteurs tx/rx en octets, durée de connexion |
+| Clients connectés | `stat/sta` | nom, réseau (VLAN), borne ou port du switch, signal, compteurs tx/rx en octets, durée de connexion ; deux booléens : adresse MAC administrée localement (`local_mac`), adresse IP attribuée (`has_ip`) — jamais l'adresse MAC ni l'adresse IP |
 | Clients vus sur 24 h | `v2/api/site/<site>/clients/history?withinHours=24`, sinon `stat/alluser` filtré sur 24 h | nom, réseau, dernière borne, dernière apparition |
 | Noms des réseaux | `rest/networkconf` | nom du réseau (pour les clients qui n'ont que l'identifiant du réseau) |
 | Santé WAN, speedtest | `stat/health` (sinon `speedtest-status` de la passerelle) | état, fournisseur, latence, uptime, coupures ; date, débits et ping du dernier speedtest |

@@ -110,11 +110,23 @@ class UnifiMapping(unittest.TestCase):
         self.assertEqual(nas["uplink"], "Switch 1 · port 3")
         self.assertEqual(nas["network"], "Famille")
         self.assertEqual((nas["tx_bytes"], nas["rx_bytes"]), (5, 6))
+        # booléens seulement : jamais l'adresse MAC ni l'adresse IP
+        self.assertTrue(iphone["has_ip"])
+        self.assertNotIn("198.51.100", json.dumps(out))
         self.assertIsNone(iot["name"])                       # jamais l'IP à la place du nom
         self.assertEqual(iot["network"], "IoT (VLAN 20)")
         self.assertFalse(tablette["online"])
         self.assertIsNone(tablette["tx_bytes"])
         self.assertEqual(tablette["id"], hashed_id("bb:00:00:00:00:09", SECRET))
+
+    def test_local_mac_and_no_ip(self):
+        # da:… = adresse administrée localement (interface virtuelle, liaison mesh) ; 3c:… = adresse du fabricant
+        self.assertTrue(unifi.is_local_mac("da:00:00:00:00:02"))
+        self.assertFalse(unifi.is_local_mac("3c:00:00:00:00:01"))
+        self.assertFalse(unifi.is_local_mac("pas une adresse"))
+        out = unifi.map_clients([{"mac": "da:00:00:00:00:02", "is_wired": True, "sw_mac": "aa:00:00:00:00:02", "sw_port": 1,
+                                  "last_seen": 1762171500}], [], [], DEVICES, SECRET, now=1762171560)
+        self.assertEqual((out[0]["local_mac"], out[0]["has_ip"]), (True, False))
 
     def test_threats_and_wan(self):
         threats = unifi.map_threats([

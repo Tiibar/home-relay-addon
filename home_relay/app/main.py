@@ -23,7 +23,7 @@ import nas
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 # heure de démarrage du module : après une coupure de courant, l'app voit qu'il a redémarré
 STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 OPTIONS = "/data/options.json"

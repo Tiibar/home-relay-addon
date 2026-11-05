@@ -453,6 +453,15 @@ def _client_name(c):
     return clean_text(c.get("name")) or clean_text(c.get("display_name")) or clean_text(c.get("hostname"))
 
 
+def is_local_mac(mac: str) -> bool:
+    """Adresse MAC administrée localement (bit 2 du premier octet) : interface virtuelle,
+    adresse privée d'un téléphone, liaison mesh… Seul ce booléen est envoyé, jamais l'adresse."""
+    try:
+        return bool(int(normalize_mac(mac)[:2], 16) & 0x02)
+    except ValueError:
+        return False
+
+
 def map_clients(now_rows, history_rows, networks, devices, secret: str, now: float | None = None):
     """Clients connectés (avec compteurs) + clients vus sur 24 h (sans compteurs)."""
     now = now or time.time()
@@ -491,6 +500,9 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
             "tx_bytes": _int(tx, 0),
             "rx_bytes": _int(rx, 0),
             "connected_since": _iso(now - uptime) if uptime is not None else None,
+            # booléens seulement (jamais l'adresse MAC ni l'adresse IP)
+            "local_mac": is_local_mac(mac),
+            "has_ip": bool(c.get("ip") or c.get("fixed_ip")),
         })
 
     for c in history_rows or []:
@@ -514,6 +526,8 @@ def map_clients(now_rows, history_rows, networks, devices, secret: str, now: flo
             "last_seen": _iso(c.get("last_seen")) or _iso(now),
             "tx_bytes": None,
             "rx_bytes": None,
+            "local_mac": is_local_mac(mac),
+            "has_ip": bool(c.get("last_ip") or c.get("ip") or c.get("fixed_ip")),
             "connected_since": None,
         })
     return out
