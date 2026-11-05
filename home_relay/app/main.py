@@ -23,7 +23,9 @@ import nas
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
+# heure de démarrage du module : après une coupure de courant, l'app voit qu'il a redémarré
+STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 OPTIONS = "/data/options.json"
 QUEUE = "/data/queue.json"
 
@@ -126,6 +128,7 @@ def collect(opts: dict, client: "unifi.UnifiClient", nas_client=None) -> dict:
         "v": 1,
         "collected_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "addon_version": VERSION,
+        "started_at": STARTED_AT,
         "sources": sources,
         "unifi": unifi_part,
         "ha": ha_part,

@@ -453,6 +453,9 @@ class Threats(unittest.TestCase):
         self.assertEqual(p["sources"]["home_assistant"], "ok")
         self.assertEqual(p["sources"]["home_assistant_registry"], "erreur : test")
         self.assertEqual(p["unifi"]["threats"], [])
+        # heure de démarrage du module (1.2.2) : même valeur à chaque envoi
+        self.assertRegex(p["started_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(p["started_at"], main.STARTED_AT)
 
 
 class SystemLogCategories(unittest.TestCase):

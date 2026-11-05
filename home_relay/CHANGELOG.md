@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.2
+
+- Chaque envoi indique l'heure de démarrage du module (`started_at`). Après
+  une coupure de courant, l'application voit que le module a redémarré (avec
+  les équipements UniFi), ce qui distingue une coupure de courant d'une panne
+  d'Internet.
+
 ## 1.2.1
 
 - NAS : l'espace du volume vient du **système de fichiers** `/volume1`

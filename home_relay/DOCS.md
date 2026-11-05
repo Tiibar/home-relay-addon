@@ -171,6 +171,14 @@ DSM et ne permet aucune écriture avec ce module.
   Supabase le détecte (compteur qui baisse, ou connexion plus récente que la
   mesure précédente).
 
+## Heure de démarrage
+
+Chaque envoi contient l'heure de démarrage du module (`started_at`, module ≥
+1.2.2). Après une coupure de courant, l'application voit que le module a
+redémarré en même temps que les équipements UniFi : c'est ce qui distingue une
+coupure de courant d'une panne d'Internet (pendant une panne d'Internet, le
+module continue de relever et envoie ses relevés au retour).
+
 ## File d'attente
 
 Si l'envoi échoue, l'instantané reste dans `/data/queue.json` (24 h au plus)
