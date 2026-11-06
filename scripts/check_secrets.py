@@ -11,9 +11,14 @@ est détecté. Bibliothèque standard uniquement.
 Seules exceptions, volontaires et documentées :
   * adresses IP de documentation (RFC 5737 : 192.0.2.0/24, 198.51.100.0/24,
     203.0.113.0/24) et 0.0.0.0 / 127.0.0.1 / :: (adresse non spécifiée) ;
-  * adresses MAC factices des tests : xx:00:00:00:00:yy et aa:bb:cc:dd:ee:ff.
+  * adresses MAC factices des tests : xx:00:00:00:00:yy et aa:bb:cc:dd:ee:ff ;
+  * HISTORY_EXCEPTIONS : valeurs déjà publiées dans l'historique et acceptées par
+    le propriétaire (une par commit, fichier et type ; valeur identifiée par son
+    empreinte SHA-256, jamais écrite ici). Seulement dans l'historique : la même
+    valeur dans un fichier actuel ou un nouveau commit reste refusée.
 """
 
+import hashlib
 import ipaddress
 import re
 import subprocess
@@ -44,6 +49,30 @@ DOC_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24",
 # « :: » = adresse non spécifiée (comme 0.0.0.0) ; apparaît aussi dans les expressions régulières « (?::…) »
 ALLOWED_IPS = {"0.0.0.0", "127.0.0.1", "::1", "::"}
 FAKE_MAC = re.compile(r"^(?:[0-9a-f]{2}[:-]00[:-]00[:-]00[:-]00[:-][0-9a-f]{2}|aa[:-]bb[:-]cc[:-]dd[:-]ee[:-]ff)$", re.I)
+
+# Exceptions de l'historique, accordées par le propriétaire (pas de réécriture d'historique).
+HISTORY_EXCEPTIONS = [
+    {
+        "commit": "d951e39c97ca2788ac05c30eb440d971af9545ac",
+        "path": "tests/test_reolink.py",
+        "label": "adresse IP",
+        "sha256": "b9ee8f5ac15c8107d89b0ee7f7daf1429bdd7488269c39d919a63b005befbb3c",
+        "date": "2026-11-06",
+        "reason": "adresse locale privée de la sonnette (réseau Caméras), sans intérêt depuis Internet ; "
+                  "corrigée dans le fichier par le commit 2774071 (adresse de documentation). "
+                  "Acceptée par le propriétaire, option (b) : pas de réécriture d'historique.",
+    },
+]
+
+
+def history_exception(commit: str, path: str, label: str, value: str):
+    """L'exception qui couvre exactement cette trouvaille de l'historique, sinon None."""
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    for e in HISTORY_EXCEPTIONS:
+        if commit == e["commit"] and path == e["path"] and label == e["label"] and digest == e["sha256"]:
+            return e
+    return None
+
 
 SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".woff", ".woff2")
 
@@ -111,14 +140,16 @@ def scan_history():
     hits, commit, path = [], "?", "?"
     for line in out.splitlines():
         if line.startswith("commit "):
-            commit = line[7:15]
+            commit = line[7:].strip()
         elif line.startswith("+++ "):
             path = line[6:] if line.startswith("+++ b/") else line[4:]
         elif line.startswith("+") and not line.startswith("+++"):
             if path.lower().endswith(SKIP_SUFFIXES):
                 continue
             for label, value in scan_line(line[1:]):
-                hits.append(f"{commit} {path} : {label} ({mask(value)})")
+                if history_exception(commit, path, label, value):
+                    continue
+                hits.append(f"{commit[:8]} {path} : {label} ({mask(value)})")
     return sorted(set(hits))
 
 

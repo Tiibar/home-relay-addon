@@ -33,7 +33,10 @@ Documentation complète (options, vie privée, données lues, limites) :
   Supabase, AWS, Google, Slack, JWT, clé privée), un mot de passe ou secret en
   clair, des identifiants dans une URL, une adresse IP (v4/v6) ou une adresse
   MAC. Seules exceptions : adresses de documentation (RFC 5737, `2001:db8::/32`), adresses non spécifiées (`0.0.0.0`, `::`)
-  et fausses MAC des tests (`xx:00:00:00:00:yy`, `aa:bb:cc:dd:ee:ff`).
+  et fausses MAC des tests (`xx:00:00:00:00:yy`, `aa:bb:cc:dd:ee:ff`). Dans l'historique seulement, une
+  exception acceptée le 06/11/2026 (`HISTORY_EXCEPTIONS`) : l'adresse locale privée de la sonnette dans le commit
+  `d951e39` (corrigée par `2774071`) — limitée à ce commit, ce fichier et cette valeur (empreinte SHA-256), sans
+  réécriture de l'historique.
 - **Secret scanning + push protection** de GitHub : refusent le push lui-même
   quand il contient une clé d'un fournisseur connu.
 - Un workflow GitHub s'exécute **après** le push : pour qu'il bloque, la

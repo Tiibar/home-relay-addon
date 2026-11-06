@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from check_secrets import scan_line  # noqa: E402
+from check_secrets import HISTORY_EXCEPTIONS, history_exception, scan_line  # noqa: E402
 
 # Les valeurs « interdites » sont assemblées à l'exécution, pour que ce fichier
 # lui-même passe le contrôle.
@@ -64,3 +64,25 @@ class Allows(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HistoryExceptions(unittest.TestCase):
+    """Option (b) du propriétaire (06/11/2026) : une seule adresse acceptée, dans un seul commit."""
+
+    IP = J(["192", ".168", ".4", ".196"])
+    SHA = "d951e39c97ca2788ac05c30eb440d971af9545ac"
+
+    def test_accepted_only_for_that_commit_file_and_value(self):
+        self.assertIsNotNone(history_exception(self.SHA, "tests/test_reolink.py", "adresse IP", self.IP))
+        self.assertIsNone(history_exception("0" * 40, "tests/test_reolink.py", "adresse IP", self.IP))
+        self.assertIsNone(history_exception(self.SHA, "home_relay/app/main.py", "adresse IP", self.IP))
+        self.assertIsNone(history_exception(self.SHA, "tests/test_reolink.py", "adresse IP", J(["192", ".168", ".4", ".34"])))
+
+    def test_still_refused_in_current_files(self):
+        self.assertIn("adresse IP", kinds("host = " + self.IP))
+
+    def test_documented(self):
+        for e in HISTORY_EXCEPTIONS:
+            self.assertEqual(len(e["commit"]), 40)
+            self.assertTrue(e["date"] and e["reason"])
+            self.assertNotIn(self.IP, repr(e))
