@@ -23,7 +23,7 @@ import nas
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.2.5"
+VERSION = "1.2.6"
 # heure de démarrage du module : après une coupure de courant, l'app voit qu'il a redémarré
 STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 OPTIONS = "/data/options.json"
@@ -116,6 +116,7 @@ def collect(opts: dict, client: "unifi.UnifiClient", nas_client=None) -> dict:
         }
 
     ha_part = None
+    reolink_part = None
     if raw.get("home_assistant"):
         h = raw["home_assistant"]
         sources["home_assistant_registry"] = "ok" if h["registry"] else f"erreur : {h['registry_error']}"
@@ -123,6 +124,8 @@ def collect(opts: dict, client: "unifi.UnifiClient", nas_client=None) -> dict:
                                            opts.get("alarm_entities"), h["registry"], opts.get("weather_entity") or None)
         if ha_part.get("alarm_tracking") == "non_suivi":
             sources["alarme"] = "désactivée : état non suivi volontairement (lecture seule)"
+        reolink_part = homeassistant.map_reolink(h["states"], h["registry"])
+        sources["reolink"] = "ok" if reolink_part else "aucune entité Reolink dans Home Assistant"
 
     return {
         "v": 1,
@@ -133,6 +136,7 @@ def collect(opts: dict, client: "unifi.UnifiClient", nas_client=None) -> dict:
         "unifi": unifi_part,
         "ha": ha_part,
         **({"nas": nas_part} if nas_part is not None else {}),
+        **({"reolink": reolink_part} if reolink_part is not None else {}),
     }
 
 

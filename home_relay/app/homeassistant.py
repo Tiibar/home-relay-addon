@@ -356,3 +356,95 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
         "alarm": alarm[:200],
         "alarm_tracking": alarm_tracking,
     }
+
+
+# ---------------------------------------------------------------------------
+# Reolink (module ≥ 1.2.6) : sonnette sur batterie et Home Hub Mini, via
+# l'intégration Reolink de Home Assistant. LECTURE SEULE des états déjà lus
+# (aucune requête en plus, aucune commande) : batterie %, signal Wi-Fi, en ligne,
+# dernière sonnerie / dernière détection. Jamais d'image, de flux, d'adresse ni
+# d'identifiant ; les entités de commande (sirène, lumière, réglages, boutons)
+# sont ignorées même si elles n'ont pas été désactivées dans Home Assistant.
+# ---------------------------------------------------------------------------
+
+REOLINK_SENSORS = {
+    "battery": re.compile(r"(^|_)battery$"),
+    "wifi": re.compile(r"(^|_)wi_?fi_signal$|(^|_)wifi_signal$"),
+    "ring": re.compile(r"(^|_)visitor$|(^|_)doorbell$|(^|_)ring$"),
+    "motion": re.compile(r"(^|_)motion$"),
+    "person": re.compile(r"(^|_)person$"),
+}
+REOLINK_READ_DOMAINS = {"sensor", "binary_sensor"}
+
+
+def _reolink_kind(entity_id: str, reg: dict):
+    domain, _, obj = entity_id.partition(".")
+    if domain not in REOLINK_READ_DOMAINS:
+        return None  # commandes (switch, light, siren, button, number, select…) : jamais lues
+    key = str(reg.get("translation_key") or "")
+    for kind, rx in REOLINK_SENSORS.items():
+        if rx.search(key) or rx.search(obj):
+            if kind == "battery" and domain != "sensor":
+                return None
+            return kind
+    return None
+
+
+def map_reolink(states: list, registry=None):
+    """Sonnette et hub Reolink : quelques valeurs, rien d'autre (fonction pure, testée)."""
+    reg_index = Registry(registry)
+    by_id = {s.get("entity_id"): s for s in states or [] if s.get("entity_id")}
+    devices: dict = {}
+    for eid, reg in reg_index.entities.items():
+        if reg.get("platform") != "reolink" or reg.get("disabled_by"):
+            continue
+        dev = reg_index.devices.get(reg.get("device_id")) or {}
+        d = devices.setdefault(reg.get("device_id") or eid, {"dev": dev, "states": [], "values": {}})
+        s = by_id.get(eid)
+        if s is not None:
+            d["states"].append(s.get("state"))
+            kind = _reolink_kind(eid, reg)
+            if kind:
+                d["values"][kind] = s
+    if not devices:
+        return None
+
+    def online(d):
+        live = [st for st in d["states"] if st is not None]
+        return bool(live) and any(st not in ("unavailable",) for st in live)
+
+    def when(s):
+        return _iso_ts(s.get("last_changed")) if s else None
+
+    out = {"doorbell": None, "hub": None}
+    for d in devices.values():
+        dev, vals = d["dev"], d["values"]
+        model = f"{dev.get('model') or ''} {dev.get('name') or ''} {dev.get('name_by_user') or ''}"
+        is_hub = bool(re.search(r"\bhub\b|home hub", model, re.I)) and "ring" not in vals and "battery" not in vals
+        if is_hub:
+            out["hub"] = {"name": Registry.device_name(dev), "online": online(d)}
+            continue
+        if "ring" in vals or "battery" in vals or re.search(r"doorbell|sonnette", model, re.I):
+            bat, wifi = vals.get("battery"), vals.get("wifi")
+            out["doorbell"] = {
+                "name": Registry.device_name(dev),
+                "online": online(d),
+                "battery_pct": _num(bat.get("state"), 0, 100) if bat else None,
+                "wifi_signal": _num(wifi.get("state"), -150, 100) if wifi else None,
+                "wifi_unit": clean_text((wifi.get("attributes") or {}).get("unit_of_measurement"), 10) if wifi else None,
+                "ring_state": clean_text(vals["ring"].get("state"), 20) if vals.get("ring") else None,
+                "last_ring_at": when(vals.get("ring")),
+                "last_motion_at": max([t for t in (when(vals.get("motion")), when(vals.get("person"))) if t], default=None),
+            }
+    if not out["doorbell"] and not out["hub"]:
+        return None
+    return out
+
+
+def _iso_ts(v):
+    s = str(v or "")
+    m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})", s)
+    if not m:
+        return None
+    # last_changed de Home Assistant est en UTC (« +00:00 ») : on le garde à la seconde
+    return m.group(1) + "Z" if s.endswith("+00:00") or s.endswith("Z") else None

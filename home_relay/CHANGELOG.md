@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.6
+
+- Reolink (sonnette sur batterie et Home Hub) : lus dans les états de Home
+  Assistant déjà obtenus (intégration Reolink officielle), en **lecture seule** :
+  batterie (%), signal Wi-Fi, en ligne, dernière sonnerie, dernière détection
+  (mouvement ou personne). Seuls les capteurs (`sensor`, `binary_sensor`) sont
+  lus ; les commandes (sirène, lumière, réglages, boutons) ne le sont jamais.
+  Aucune image, aucun flux vidéo, aucune adresse ni identifiant envoyés.
+
 ## 1.2.5
 
 - Internet : la disponibilité et la latence moyenne mesurées par la passerelle
