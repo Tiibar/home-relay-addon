@@ -29,7 +29,7 @@ REGISTRY = {
 }
 STATES = [
     {"entity_id": "sensor.sonnette_battery", "state": "87", "attributes": {"unit_of_measurement": "%"}},
-    {"entity_id": "sensor.sonnette_wi_fi_signal", "state": "4", "attributes": {"unit_of_measurement": "bars", "ip": "192.168.4.196"}},
+    {"entity_id": "sensor.sonnette_wi_fi_signal", "state": "4", "attributes": {"unit_of_measurement": "bars", "ip": "203.0.113.196"}},
     {"entity_id": "binary_sensor.sonnette_visitor", "state": "off", "last_changed": "2026-11-06T10:41:03.512+00:00"},
     {"entity_id": "binary_sensor.sonnette_motion", "state": "off", "last_changed": "2026-11-06T10:50:00+00:00"},
     {"entity_id": "binary_sensor.sonnette_person", "state": "off", "last_changed": "2026-11-06T10:52:10+00:00"},
@@ -51,7 +51,7 @@ class Reolink(unittest.TestCase):
 
     def test_no_image_no_stream_no_address_no_token(self):
         text = json.dumps(homeassistant.map_reolink(STATES, REGISTRY))
-        for bad in ("camera_proxy", "token", "SECRET", "192.168", "siren", "entity_picture", "fluent"):
+        for bad in ("camera_proxy", "token", "SECRET", "203.0.113", "siren", "entity_picture", "fluent"):
             self.assertNotIn(bad, text)
 
     def test_offline_and_absent(self):
