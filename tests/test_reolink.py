@@ -47,7 +47,7 @@ class Reolink(unittest.TestCase):
             "name": "Sonnette", "online": True, "battery_pct": 87.0, "wifi_signal": 4.0, "wifi_unit": "bars",
             "ring_state": "off", "last_ring_at": "2026-11-06T10:41:03Z", "last_motion_at": "2026-11-06T10:52:10Z",
         })
-        self.assertEqual(out["hub"], {"name": "Hub Reolink", "online": True})
+        self.assertEqual(out["hub"], {"name": "Hub Reolink", "online": True, "derived": False})
 
     def test_no_image_no_stream_no_address_no_token(self):
         text = json.dumps(homeassistant.map_reolink(STATES, REGISTRY))
@@ -67,6 +67,59 @@ class Reolink(unittest.TestCase):
         self.assertIsNone(homeassistant._reolink_kind("switch.sonnette_battery", {"translation_key": "battery"}))
         self.assertIsNone(homeassistant._reolink_kind("number.sonnette_motion", {"translation_key": "motion"}))
         self.assertIsNone(homeassistant._reolink_kind("binary_sensor.sonnette_battery_state", {}))
+
+
+
+# Configuration RÉELLE du 06/11/2026 (noms et choix du propriétaire ; identifiants inventés) :
+# « Hub Reolink » (Home Hub Mini) sans aucune entité active ; « Sonette » (Video Doorbell,
+# reliée par le hub) avec seulement Battery, Wi-Fi signal, Visitor, Person, Motion actives.
+REAL_REGISTRY = {
+    "devices": [
+        {"id": "hub", "name": "Hub Reolink", "model": "Reolink Home Hub Mini", "manufacturer": "Reolink", "identifiers": [["reolink", "x"]]},
+        {"id": "bell", "name": "Sonette", "model": "Reolink Video Doorbell", "manufacturer": "Reolink", "via_device_id": "hub"},
+    ],
+    "entities": [
+        {"entity_id": "sensor.sonette_battery", "device_id": "bell", "platform": "reolink", "translation_key": "battery_percent", "entity_category": "diagnostic"},
+        {"entity_id": "sensor.sonette_wi_fi_signal", "device_id": "bell", "platform": "reolink", "translation_key": "wifi_signal", "entity_category": "diagnostic"},
+        {"entity_id": "binary_sensor.sonette_visitor", "device_id": "bell", "platform": "reolink", "translation_key": "visitor"},
+        {"entity_id": "binary_sensor.sonette_person", "device_id": "bell", "platform": "reolink", "translation_key": "person"},
+        {"entity_id": "binary_sensor.sonette_motion", "device_id": "bell", "platform": "reolink", "translation_key": "motion"},
+        {"entity_id": "select.sonette_work_mode_battery", "device_id": "bell", "platform": "reolink", "disabled_by": "user"},
+        {"entity_id": "camera.sonette_fluent", "device_id": "bell", "platform": "reolink", "disabled_by": "user"},
+        {"entity_id": "update.hub_reolink_firmware", "device_id": "hub", "platform": "reolink", "disabled_by": "user"},
+        {"entity_id": "button.hub_reolink_restart", "device_id": "hub", "platform": "reolink", "disabled_by": "user"},
+    ],
+    "areas": [],
+}
+REAL_STATES = [
+    {"entity_id": "sensor.sonette_battery", "state": "92", "attributes": {"unit_of_measurement": "%"}},
+    {"entity_id": "sensor.sonette_wi_fi_signal", "state": "3", "attributes": {}},
+    {"entity_id": "binary_sensor.sonette_visitor", "state": "off", "last_changed": "2026-11-06T16:02:11+00:00"},
+    {"entity_id": "binary_sensor.sonette_person", "state": "off", "last_changed": "2026-11-06T16:01:58+00:00"},
+    {"entity_id": "binary_sensor.sonette_motion", "state": "off", "last_changed": "2026-11-06T16:01:40+00:00"},
+]
+
+
+class ReolinkRealSetup(unittest.TestCase):
+    def test_real_entities_and_hub_deduced_from_doorbell(self):
+        out = homeassistant.map_reolink(REAL_STATES, REAL_REGISTRY)
+        self.assertEqual(out["doorbell"]["name"], "Sonette")
+        self.assertEqual((out["doorbell"]["battery_pct"], out["doorbell"]["wifi_signal"], out["doorbell"]["online"]), (92.0, 3.0, True))
+        self.assertEqual(out["doorbell"]["last_ring_at"], "2026-11-06T16:02:11Z")
+        self.assertEqual(out["doorbell"]["last_motion_at"], "2026-11-06T16:01:58Z")
+        self.assertEqual(out["hub"], {"name": "Hub Reolink", "online": True, "derived": True})
+
+    def test_doorbell_unavailable_hub_unknown(self):
+        off = [dict(s, state="unavailable") for s in REAL_STATES]
+        out = homeassistant.map_reolink(off, REAL_REGISTRY)
+        self.assertFalse(out["doorbell"]["online"])
+        self.assertIsNone(out["doorbell"]["battery_pct"])
+        self.assertEqual(out["hub"], {"name": "Hub Reolink", "online": None, "derived": True})
+
+    def test_disabled_controls_never_read(self):
+        text = json.dumps(homeassistant.map_reolink(REAL_STATES + [{"entity_id": "select.sonette_work_mode_battery", "state": "Smart power"}], REAL_REGISTRY))
+        self.assertNotIn("Smart power", text)
+        self.assertNotIn("work_mode", text)
 
 
 if __name__ == "__main__":

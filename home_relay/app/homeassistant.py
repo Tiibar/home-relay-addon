@@ -368,8 +368,10 @@ def map_states(config: dict, states: list, climate_entities=None, alarm_entities
 # ---------------------------------------------------------------------------
 
 REOLINK_SENSORS = {
-    "battery": re.compile(r"(^|_)battery$"),
-    "wifi": re.compile(r"(^|_)wi_?fi_signal$|(^|_)wifi_signal$"),
+    # clés de l'intégration Reolink (translation_key) ou fin de l'entity_id réel : jamais inventés,
+    # seules les entités de la plateforme « reolink » du registre sont examinées
+    "battery": re.compile(r"(^|_)battery(_percent|_level)?$"),
+    "wifi": re.compile(r"(^|_)wi_?fi_signal$"),
     "ring": re.compile(r"(^|_)visitor$|(^|_)doorbell$|(^|_)ring$"),
     "motion": re.compile(r"(^|_)motion$"),
     "person": re.compile(r"(^|_)person$"),
@@ -381,25 +383,41 @@ def _reolink_kind(entity_id: str, reg: dict):
     domain, _, obj = entity_id.partition(".")
     if domain not in REOLINK_READ_DOMAINS:
         return None  # commandes (switch, light, siren, button, number, select…) : jamais lues
-    key = str(reg.get("translation_key") or "")
+    keys = [str(reg.get("translation_key") or ""), obj]
     for kind, rx in REOLINK_SENSORS.items():
-        if rx.search(key) or rx.search(obj):
+        if any(rx.search(k) for k in keys if k):
             if kind == "battery" and domain != "sensor":
                 return None
             return kind
     return None
 
 
+def _is_reolink_device(dev: dict) -> bool:
+    return "reolink" in str(dev.get("manufacturer") or "").lower() or any(
+        isinstance(i, (list, tuple)) and i and i[0] == "reolink" for i in dev.get("identifiers") or [])
+
+
 def map_reolink(states: list, registry=None):
-    """Sonnette et hub Reolink : quelques valeurs, rien d'autre (fonction pure, testée)."""
+    """Sonnette et hub Reolink : quelques valeurs, rien d'autre (fonction pure, testée).
+
+    « En ligne » = au moins une entité ACTIVE de l'appareil n'est pas « unavailable ».
+    Le hub n'a volontairement aucune entité active (06/11/2026) : la sonnette passe par lui,
+    donc s'il n'a pas d'entité active, il est « en ligne » quand la sonnette l'est
+    (`derived`: true) et inconnu sinon.
+    """
     reg_index = Registry(registry)
     by_id = {s.get("entity_id"): s for s in states or [] if s.get("entity_id")}
     devices: dict = {}
+    for dev_id, dev in reg_index.devices.items():
+        if _is_reolink_device(dev):
+            devices[dev_id] = {"dev": dev, "states": [], "values": {}}
     for eid, reg in reg_index.entities.items():
-        if reg.get("platform") != "reolink" or reg.get("disabled_by"):
+        if reg.get("platform") != "reolink":
             continue
-        dev = reg_index.devices.get(reg.get("device_id")) or {}
-        d = devices.setdefault(reg.get("device_id") or eid, {"dev": dev, "states": [], "values": {}})
+        dev_id = reg.get("device_id") or eid
+        d = devices.setdefault(dev_id, {"dev": reg_index.devices.get(reg.get("device_id")) or {}, "states": [], "values": {}})
+        if reg.get("disabled_by"):
+            continue
         s = by_id.get(eid)
         if s is not None:
             d["states"].append(s.get("state"))
@@ -411,20 +429,20 @@ def map_reolink(states: list, registry=None):
 
     def online(d):
         live = [st for st in d["states"] if st is not None]
-        return bool(live) and any(st not in ("unavailable",) for st in live)
+        return (any(st != "unavailable" for st in live)) if live else None
 
     def when(s):
         return _iso_ts(s.get("last_changed")) if s else None
 
     out = {"doorbell": None, "hub": None}
-    for d in devices.values():
+    hub_dev = None
+    for dev_id, d in devices.items():
         dev, vals = d["dev"], d["values"]
         model = f"{dev.get('model') or ''} {dev.get('name') or ''} {dev.get('name_by_user') or ''}"
-        is_hub = bool(re.search(r"\bhub\b|home hub", model, re.I)) and "ring" not in vals and "battery" not in vals
-        if is_hub:
-            out["hub"] = {"name": Registry.device_name(dev), "online": online(d)}
+        if re.search(r"\bhub\b|home hub|\bnvr\b", model, re.I) and "ring" not in vals and "battery" not in vals:
+            hub_dev = (dev_id, d)
             continue
-        if "ring" in vals or "battery" in vals or re.search(r"doorbell|sonnette", model, re.I):
+        if "ring" in vals or "battery" in vals or re.search(r"doorbell|sonn?ette", model, re.I):
             bat, wifi = vals.get("battery"), vals.get("wifi")
             out["doorbell"] = {
                 "name": Registry.device_name(dev),
@@ -435,7 +453,19 @@ def map_reolink(states: list, registry=None):
                 "ring_state": clean_text(vals["ring"].get("state"), 20) if vals.get("ring") else None,
                 "last_ring_at": when(vals.get("ring")),
                 "last_motion_at": max([t for t in (when(vals.get("motion")), when(vals.get("person"))) if t], default=None),
+                "_via": dev.get("via_device_id"),
             }
+    if hub_dev:
+        dev_id, d = hub_dev
+        own = online(d)
+        if own is not None:
+            out["hub"] = {"name": Registry.device_name(d["dev"]), "online": own, "derived": False}
+        else:
+            bell = out["doorbell"]
+            via_ok = bell is not None and (bell.get("_via") in (None, dev_id))
+            out["hub"] = {"name": Registry.device_name(d["dev"]), "online": True if (via_ok and bell and bell["online"]) else None, "derived": True}
+    if out["doorbell"]:
+        out["doorbell"].pop("_via", None)
     if not out["doorbell"] and not out["hub"]:
         return None
     return out

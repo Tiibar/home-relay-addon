@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.7
+
+- Reolink : reconnaissance des entités réelles de l'intégration (batterie
+  « battery_percent », signal Wi-Fi, Visiteur, Personne, Mouvement), appareils
+  repérés par le fabricant Reolink même sans entité active. Le hub n'a
+  volontairement aucune entité active : il est dit « en ligne » quand la
+  sonnette, qui passe par lui, l'est (`derived`), inconnu sinon. Entités
+  désactivées jamais lues ; toujours aucune commande, image ni flux.
+
 ## 1.2.6
 
 - Reolink (sonnette sur batterie et Home Hub) : lus dans les états de Home
