@@ -23,7 +23,7 @@ import nas
 import unifi
 from sender import Queue, make_sender
 
-VERSION = "1.2.7"
+VERSION = "1.2.8"
 # heure de démarrage du module : après une coupure de courant, l'app voit qu'il a redémarré
 STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 OPTIONS = "/data/options.json"
@@ -125,7 +125,7 @@ def collect(opts: dict, client: "unifi.UnifiClient", nas_client=None) -> dict:
         if ha_part.get("alarm_tracking") == "non_suivi":
             sources["alarme"] = "désactivée : état non suivi volontairement (lecture seule)"
         reolink_part = homeassistant.map_reolink(h["states"], h["registry"])
-        sources["reolink"] = "ok" if reolink_part else "aucune entité Reolink dans Home Assistant"
+        sources["reolink"] = "ok" if reolink_part else "absente : aucune entité Reolink active dans Home Assistant"
 
     return {
         "v": 1,

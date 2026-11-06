@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.8
+
+- Reolink : sans aucune entité Reolink active dans Home Assistant (intégration
+  supprimée ou désactivée), rien n'est envoyé et la source vaut « absente : … »
+  (l'app affiche « non suivie volontairement ») ; plus jamais de relevé vide.
+
 ## 1.2.7
 
 - Reolink : reconnaissance des entités réelles de l'intégration (batterie

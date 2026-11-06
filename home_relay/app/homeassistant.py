@@ -424,7 +424,9 @@ def map_reolink(states: list, registry=None):
             kind = _reolink_kind(eid, reg)
             if kind:
                 d["values"][kind] = s
-    if not devices:
+    # aucune entité Reolink ACTIVE (intégration supprimée ou désactivée, 06/11/2026) : rien à envoyer,
+    # la source est « absente » (l'app affiche « non suivie volontairement »), jamais des valeurs vides
+    if not devices or not any(d["states"] for d in devices.values()):
         return None
 
     def online(d):

@@ -122,5 +122,24 @@ class ReolinkRealSetup(unittest.TestCase):
         self.assertNotIn("work_mode", text)
 
 
+class ReolinkRemoved(unittest.TestCase):
+    """06/11/2026 : intégration désactivée puis supprimée de Home Assistant (elle réveillait la sonnette)."""
+
+    def test_integration_disabled_sends_nothing(self):
+        reg = dict(REAL_REGISTRY, entities=[dict(e, disabled_by="config_entry") for e in REAL_REGISTRY["entities"]])
+        self.assertIsNone(homeassistant.map_reolink([], reg))
+        # même si des états traînent encore dans Home Assistant
+        self.assertIsNone(homeassistant.map_reolink(REAL_STATES, reg))
+
+    def test_integration_removed_sends_nothing(self):
+        self.assertIsNone(homeassistant.map_reolink([], {"devices": [], "entities": [], "areas": []}))
+        # appareils encore dans le registre, sans entité Reolink
+        self.assertIsNone(homeassistant.map_reolink([], dict(REAL_REGISTRY, entities=[])))
+
+    def test_source_says_absent(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", "home_relay", "app", "main.py"), encoding="utf-8") as f:
+            self.assertIn('"absente : aucune entité Reolink active dans Home Assistant"', f.read())
+
+
 if __name__ == "__main__":
     unittest.main()
