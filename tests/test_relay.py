@@ -145,6 +145,25 @@ class UnifiMapping(unittest.TestCase):
         self.assertEqual(wan["isp"], "FAI")
         self.assertEqual(speed["down_mbps"], 512.3)
 
+    def test_wan_monitors_without_targets(self):
+        monitors = {"WAN": {"availability": 99.98, "latency_average": 14, "time_period": 86400,
+                            "monitors": [{"target": "203.0.113.9", "type": "icmp", "availability": 100, "latency_average": 13},
+                                         {"target": "ping.example.net", "type": "dns", "availability": 99.9}]}}
+        wan, _ = unifi.map_wan([
+            {"subsystem": "wan", "status": "ok", "uptime_stats": monitors},
+            {"subsystem": "www", "status": "ok", "latency": 16},
+        ], DEVICES)
+        self.assertEqual((wan["availability_pct"], wan["latency_avg_ms"], wan["monitor_period_s"]), (99.98, 14, 86400))
+        self.assertNotIn("203.0.113.9", json.dumps(wan))
+        self.assertNotIn("ping.example.net", json.dumps(wan))
+        # absent de stat/health : lu dans la fiche de la passerelle
+        gw = [dict(d, uptime_stats={"WAN": {"availability": 100, "latency_average": 11, "time_period": 3600}}) if unifi.KIND.get(d.get("type")) == "gateway" else d for d in DEVICES]
+        wan2, _ = unifi.map_wan([{"subsystem": "wan", "status": "ok"}], gw)
+        self.assertEqual((wan2["availability_pct"], wan2["latency_avg_ms"]), (100, 11))
+        # valeurs impossibles ignorées
+        wan3, _ = unifi.map_wan([{"subsystem": "wan", "status": "ok", "uptime_stats": {"WAN": {"availability": 140}}}], [])
+        self.assertNotIn("availability_pct", wan3)
+
     def test_no_ip_or_mac_leaves_home(self):
         payload = {
             "devices": unifi.map_devices(DEVICES, SECRET),

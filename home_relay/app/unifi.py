@@ -737,7 +737,19 @@ def map_wan(health_rows, devices):
     """Santé WAN et speedtest, sans adresse IP ni serveur DNS."""
     sub = {h.get("subsystem"): h for h in health_rows or []}
     wan, www = sub.get("wan") or {}, sub.get("www") or {}
+    # Disponibilité et latence moyenne mesurées par la passerelle elle-même (moniteurs WAN de
+    # UniFi Network, déjà présents dans stat/health ou dans la fiche de la passerelle : aucune
+    # requête en plus). Les cibles des moniteurs (adresses) ne sont JAMAIS reprises.
+    up = (wan.get("uptime_stats") or {}).get("WAN") or {}
+    if not up:
+        for d in devices or []:
+            if KIND.get(d.get("type")) == "gateway":
+                up = (d.get("uptime_stats") or {}).get("WAN") or {}
+                break
     wan_out = {
+        "availability_pct": _num(up.get("availability"), 0, 100),
+        "latency_avg_ms": _num(up.get("latency_average"), 0, 60000),
+        "monitor_period_s": _int(up.get("time_period"), 0, 31 * 86400),
         "status": clean_text(wan.get("status"), 20),
         "www_status": clean_text(www.get("status"), 20),
         "isp": clean_text(wan.get("isp_name") or wan.get("isp_organization"), 60),

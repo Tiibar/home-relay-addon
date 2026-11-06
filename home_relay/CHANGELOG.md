@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.5
+
+- Internet : la disponibilité et la latence moyenne mesurées par la passerelle
+  elle-même (moniteurs WAN de UniFi Network, déjà présents dans la réponse
+  `stat/health` lue en GET, ou dans la fiche de la passerelle) sont envoyées
+  avec la santé WAN : `availability_pct`, `latency_avg_ms`, `monitor_period_s`.
+  L'application s'en sert quand les mesures du cloud UniFi manquent. Aucune
+  nouvelle requête, rien de nouveau hors lecture ; les cibles des moniteurs
+  (adresses) ne sont jamais envoyées.
+
 ## 1.2.4
 
 - Appareils : deux booléens par appareil, jamais l'adresse elle-même —
